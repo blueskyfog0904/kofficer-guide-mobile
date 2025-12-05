@@ -1,0 +1,1395 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
+import '../models/restaurant.dart';
+import '../models/user_review.dart';
+import '../services/auth_service.dart';
+import '../services/user_service.dart';
+import '../services/restaurant_service.dart';
+import 'main_screen.dart';
+
+class RestaurantDetailScreen extends StatefulWidget {
+  final Restaurant restaurant;
+
+  const RestaurantDetailScreen({super.key, required this.restaurant});
+
+  @override
+  State<RestaurantDetailScreen> createState() => _RestaurantDetailScreenState();
+}
+
+class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
+  bool _isFavorite = false;
+  bool _isLoadingFavorite = false;
+  final UserService _userService = UserService();
+  final RestaurantService _restaurantService = RestaurantService();
+  
+  // 이미지 슬라이더 관련
+  final PageController _pageController = PageController();
+  int _currentImageIndex = 0;
+  List<String> _imageUrls = [];
+  bool _isLoadingImages = true;
+  
+  // 리뷰 작성 관련
+  final TextEditingController _reviewController = TextEditingController();
+  double _userRating = 0;
+  bool _isSubmittingReview = false;
+  
+  // 리뷰 목록 관련
+  List<UserReview> _reviews = [];
+  ReviewSummary? _reviewSummary;
+  bool _isLoadingReviews = true;
+  
+  // 리뷰 사진 업로드 관련
+  final ImagePicker _imagePicker = ImagePicker();
+  List<File> _selectedPhotos = [];
+  bool _isUploadingPhotos = false;
+  static const int _maxPhotos = 6;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkFavoriteStatus();
+    _loadImages();
+    _loadReviews();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    _reviewController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadImages() async {
+    setState(() => _isLoadingImages = true);
+    
+    try {
+      // restaurant_photos 테이블에서 photo_url 가져오기
+      final photos = await _restaurantService.getRestaurantPhotos(widget.restaurant.id);
+      
+      final images = <String>[];
+      
+      // 1. 대표 사진 (primary_photo_url) 먼저 추가
+      if (widget.restaurant.primaryPhotoUrl != null && 
+          widget.restaurant.primaryPhotoUrl!.isNotEmpty) {
+        images.add(widget.restaurant.primaryPhotoUrl!);
+      }
+      
+      // 2. restaurant_photos 테이블의 사진들 추가 (중복 제거)
+      for (var photoUrl in photos) {
+        if (!images.contains(photoUrl)) {
+          images.add(photoUrl);
+        }
+      }
+      
+      print('✅ Loaded ${images.length} images for restaurant ${widget.restaurant.id}');
+      
+      if (mounted) {
+        setState(() {
+          _imageUrls = images;
+          _isLoadingImages = false;
+        });
+      }
+    } catch (e) {
+      print('❌ Error loading images: $e');
+      if (mounted) {
+        setState(() => _isLoadingImages = false);
+      }
+    }
+  }
+
+  Future<void> _checkFavoriteStatus() async {
+    final user = context.read<AuthService>().currentUser;
+    if (user != null) {
+      final isFav = await _userService.isFavorite(user.id, widget.restaurant.id);
+      if (mounted) setState(() => _isFavorite = isFav);
+    }
+  }
+  
+  /// 리뷰 목록 로드
+  Future<void> _loadReviews() async {
+    setState(() => _isLoadingReviews = true);
+    
+    try {
+      final reviews = await _restaurantService.getRestaurantReviews(widget.restaurant.id);
+      final summary = await _restaurantService.getRestaurantReviewSummary(widget.restaurant.id);
+      
+      if (mounted) {
+        setState(() {
+          _reviews = reviews;
+          _reviewSummary = summary;
+          _isLoadingReviews = false;
+        });
+      }
+    } catch (e) {
+      print('❌ Error loading reviews: $e');
+      if (mounted) {
+        setState(() => _isLoadingReviews = false);
+      }
+    }
+  }
+
+  Future<void> _toggleFavorite() async {
+    final user = context.read<AuthService>().currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('로그인이 필요합니다.')),
+      );
+      return;
+    }
+
+    setState(() => _isLoadingFavorite = true);
+    try {
+      final newStatus = await _userService.toggleFavorite(user.id, widget.restaurant.id);
+      setState(() => _isFavorite = newStatus);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(newStatus ? '즐겨찾기에 추가되었습니다.' : '즐겨찾기가 해제되었습니다.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('작업 중 오류가 발생했습니다.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingFavorite = false);
+    }
+  }
+
+  void _copyToClipboard(String text, String label) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$label이(가) 복사되었습니다.'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  /// 공유하기 기능
+  Future<void> _shareRestaurant() async {
+    final restaurant = widget.restaurant;
+    
+    // 딥링크 또는 웹 URL 생성 (실제 서비스 URL로 변경 필요)
+    final shareUrl = 'https://kofficer-guide.com/restaurant/${restaurant.id}';
+    
+    // 공유 템플릿 생성
+    final shareText = '''[공무원맛집 가이드]
+
+${restaurant.name}
+
+${restaurant.address ?? restaurant.roadAddress ?? '주소 정보 없음'}
+
+$shareUrl''';
+
+    try {
+      await Share.share(
+        shareText,
+        subject: '[공무원맛집 가이드] ${restaurant.name}',
+      );
+    } catch (e) {
+      print('❌ Error sharing: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('공유하기에 실패했습니다.')),
+        );
+      }
+    }
+  }
+
+  void _openNaverSearch(BuildContext context) {
+    final query = Uri.encodeComponent(widget.restaurant.name);
+    final url = 'https://m.search.naver.com/search.naver?query=$query';
+    
+    final mainState = MainScreen.globalKey.currentState;
+    if (mainState != null) {
+      mainState.navigateToTab(3, browserUrl: url);
+    }
+  }
+
+  // 네이버 블로그 리뷰 버튼 클릭 - 하단 탭 '네이버'에서 검색
+  void _openNaverBlogReview(BuildContext context) {
+    // 검색어 조합: sub_add1 sub_add2 title
+    final parts = <String>[];
+    
+    if (widget.restaurant.subAdd1 != null && widget.restaurant.subAdd1!.isNotEmpty) {
+      parts.add(widget.restaurant.subAdd1!);
+    }
+    if (widget.restaurant.subAdd2 != null && widget.restaurant.subAdd2!.isNotEmpty) {
+      parts.add(widget.restaurant.subAdd2!);
+    }
+    if (widget.restaurant.title != null && widget.restaurant.title!.isNotEmpty) {
+      parts.add(widget.restaurant.title!);
+    }
+    
+    // 검색어가 없으면 음식점 이름 사용
+    final searchQuery = parts.isNotEmpty ? parts.join(' ') : widget.restaurant.name;
+    final query = Uri.encodeComponent(searchQuery);
+    final url = 'https://m.search.naver.com/search.naver?where=blog&query=$query';
+    
+    print('🔍 Naver blog search query: $searchQuery');
+    
+    final mainState = MainScreen.globalKey.currentState;
+    if (mainState != null) {
+      mainState.navigateToTab(3, browserUrl: url);
+    }
+  }
+
+  /// 사진 선택 (갤러리/카메라)
+  Future<void> _pickPhotos() async {
+    if (_selectedPhotos.length >= _maxPhotos) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('최대 $_maxPhotos장까지 선택할 수 있습니다.')),
+      );
+      return;
+    }
+    
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('갤러리에서 선택'),
+              onTap: () async {
+                Navigator.pop(context);
+                final remaining = _maxPhotos - _selectedPhotos.length;
+                final pickedFiles = await _imagePicker.pickMultiImage(
+                  imageQuality: 85,
+                  maxWidth: 1920,
+                  maxHeight: 1920,
+                );
+                
+                if (pickedFiles.isNotEmpty) {
+                  final files = pickedFiles
+                      .take(remaining)
+                      .map((xfile) => File(xfile.path))
+                      .toList();
+                  setState(() {
+                    _selectedPhotos.addAll(files);
+                  });
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('카메라로 촬영'),
+              onTap: () async {
+                Navigator.pop(context);
+                final pickedFile = await _imagePicker.pickImage(
+                  source: ImageSource.camera,
+                  imageQuality: 85,
+                  maxWidth: 1920,
+                  maxHeight: 1920,
+                );
+                
+                if (pickedFile != null) {
+                  setState(() {
+                    _selectedPhotos.add(File(pickedFile.path));
+                  });
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  /// 선택한 사진 제거
+  void _removePhoto(int index) {
+    setState(() {
+      _selectedPhotos.removeAt(index);
+    });
+  }
+
+  Future<void> _submitReview() async {
+    final user = context.read<AuthService>().currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('로그인이 필요합니다.')),
+      );
+      return;
+    }
+
+    if (_userRating == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('평점을 선택해주세요.')),
+      );
+      return;
+    }
+
+    setState(() => _isSubmittingReview = true);
+    
+    try {
+      List<String>? photoUrls;
+      
+      // 사진이 선택되었으면 업로드
+      if (_selectedPhotos.isNotEmpty) {
+        setState(() => _isUploadingPhotos = true);
+        
+        photoUrls = await _restaurantService.uploadReviewPhotos(
+          restaurantId: widget.restaurant.id,
+          userId: user.id,
+          photos: _selectedPhotos,
+        );
+        
+        setState(() => _isUploadingPhotos = false);
+      }
+      
+      await _restaurantService.submitReview(
+        restaurantId: widget.restaurant.id,
+        userId: user.id,
+        rating: _userRating,
+        content: _reviewController.text.trim(),
+        photoUrls: photoUrls,
+      );
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('리뷰가 등록되었습니다.')),
+        );
+        setState(() {
+          _reviewController.clear();
+          _userRating = 0;
+          _selectedPhotos.clear();
+        });
+        // 리뷰 목록 새로고침
+        _loadReviews();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('리뷰 등록 실패: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmittingReview = false;
+          _isUploadingPhotos = false;
+        });
+      }
+    }
+  }
+
+  // 사진 슬라이더 위젯 (맨 위에 표시)
+  Widget _buildImageSlider() {
+    if (_isLoadingImages) {
+      return Container(
+        height: 250,
+        color: Colors.grey[200],
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_imageUrls.isEmpty) {
+      return Container(
+        height: 250,
+        color: Colors.grey[200],
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.photo_library, size: 60, color: Colors.grey),
+              SizedBox(height: 8),
+              Text('등록된 사진이 없습니다.', style: TextStyle(color: Colors.grey)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Stack(
+      children: [
+        // 이미지 슬라이더
+        SizedBox(
+          height: 250,
+          child: PageView.builder(
+            controller: _pageController,
+            itemCount: _imageUrls.length,
+            onPageChanged: (index) {
+              setState(() => _currentImageIndex = index);
+            },
+            itemBuilder: (context, index) {
+              return Image.network(
+                _imageUrls[index],
+                fit: BoxFit.cover,
+                width: double.infinity,
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) return child;
+                  return Container(
+                    color: Colors.grey[200],
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        value: loadingProgress.expectedTotalBytes != null
+                            ? loadingProgress.cumulativeBytesLoaded /
+                                loadingProgress.expectedTotalBytes!
+                            : null,
+                      ),
+                    ),
+                  );
+                },
+                errorBuilder: (context, error, stackTrace) => Container(
+                  color: Colors.grey[200],
+                  child: const Center(
+                    child: Icon(Icons.image_not_supported, size: 50, color: Colors.grey),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        // 페이지 인디케이터 (하단)
+        if (_imageUrls.length > 1)
+          Positioned(
+            bottom: 16,
+            left: 0,
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(_imageUrls.length, (index) {
+                return Container(
+                  width: 8,
+                  height: 8,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _currentImageIndex == index
+                        ? Colors.white
+                        : Colors.white.withOpacity(0.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 2,
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ),
+          ),
+        // 사진 개수 표시 (우측 상단)
+        if (_imageUrls.length > 1)
+          Positioned(
+            top: 16,
+            right: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                '${_currentImageIndex + 1} / ${_imageUrls.length}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF9FAFB),
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          widget.restaurant.name,
+          style: const TextStyle(fontSize: 16),
+          overflow: TextOverflow.ellipsis,
+        ),
+        titleSpacing: 0,
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 🖼️ 사진 슬라이더 (맨 위)
+            _buildImageSlider(),
+            
+            // 사진 안내 문구
+            if (_imageUrls.length > 1)
+              Container(
+                color: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Center(
+                  child: Text(
+                    '${_imageUrls.length}장의 사진이 있습니다. 좌우로 스크롤하여 모두 확인하세요.',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
+                    ),
+                  ),
+                ),
+              ),
+            
+            // 기본 정보 카드
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 음식점 이름
+                  Text(
+                    widget.restaurant.name,
+                    style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF111827),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  
+                  // 평점
+                  Row(
+                    children: [
+                      ...List.generate(5, (index) {
+                        final rating = widget.restaurant.avgRating ?? 0;
+                        return Icon(
+                          index < rating.floor() 
+                              ? Icons.star 
+                              : (index < rating ? Icons.star_half : Icons.star_border),
+                          color: Colors.amber,
+                          size: 20,
+                        );
+                      }),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${widget.restaurant.avgRating?.toStringAsFixed(1) ?? '0.0'}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF374151),
+                        ),
+                      ),
+                      Text(
+                        ' (${widget.restaurant.reviewCount ?? 0}개 리뷰)',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF6B7280),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  
+                  // 카테고리
+                  if (widget.restaurant.category != null) ...[
+                    const Text(
+                      '카테고리',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.restaurant.category!,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        color: Color(0xFF374151),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  
+                  // 주소
+                  if (widget.restaurant.address != null) ...[
+                    _buildAddressRow(
+                      label: '주소',
+                      address: widget.restaurant.address!,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  
+                  // 도로명주소
+                  if (widget.restaurant.roadAddress != null) ...[
+                    _buildAddressRow(
+                      label: '도로명주소',
+                      address: widget.restaurant.roadAddress!,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 8),
+            
+            // 액션 버튼들
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _isLoadingFavorite ? null : _toggleFavorite,
+                      icon: _isLoadingFavorite 
+                          ? const SizedBox(
+                              width: 16, 
+                              height: 16, 
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Icon(
+                              _isFavorite ? Icons.favorite : Icons.favorite_border,
+                              color: _isFavorite ? Colors.red : const Color(0xFF6B7280),
+                            ),
+                      label: const Text('즐겨찾기'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF374151),
+                        side: const BorderSide(color: Color(0xFFE5E7EB)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _shareRestaurant,
+                      icon: const Icon(Icons.share, size: 18),
+                      label: const Text('공유하기'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF3B82F6),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // 네이버 블로그 리뷰 버튼
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: OutlinedButton.icon(
+                onPressed: () => _openNaverBlogReview(context),
+                icon: const Icon(Icons.edit_note, color: Color(0xFF03C75A)),
+                label: const Text(
+                  '네이버 블로그 리뷰',
+                  style: TextStyle(color: Color(0xFF03C75A)),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF03C75A)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  minimumSize: const Size(double.infinity, 48),
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 8),
+            
+            // 통계 정보
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildStatItem('리뷰', '${widget.restaurant.reviewCount ?? 0}', Icons.rate_review),
+                  Container(width: 1, height: 40, color: const Color(0xFFE5E7EB)),
+                  _buildStatItem('평점', '${widget.restaurant.avgRating?.toStringAsFixed(1) ?? '0.0'}', Icons.star),
+                  Container(width: 1, height: 40, color: const Color(0xFFE5E7EB)),
+                  _buildStatItem('방문', '${widget.restaurant.visitCount ?? 0}', Icons.people),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 8),
+            
+            // 사용자 리뷰 목록 섹션
+            _buildUserReviewsSection(),
+            
+            const SizedBox(height: 8),
+            
+            // 리뷰 작성 섹션
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '리뷰 작성',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF111827),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // 별점 선택
+                  const Text(
+                    '평점을 선택해주세요',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Color(0xFF6B7280),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      ...List.generate(5, (index) {
+                        return GestureDetector(
+                          onTap: () {
+                            setState(() => _userRating = index + 1.0);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: Icon(
+                              index < _userRating ? Icons.star : Icons.star_border,
+                              color: Colors.amber,
+                              size: 36,
+                            ),
+                          ),
+                        );
+                      }),
+                      if (_userRating > 0)
+                        Text(
+                          '${_userRating.toInt()}점',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF374151),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // 리뷰 텍스트 입력
+                  TextField(
+                    controller: _reviewController,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: '이 음식점에 대한 리뷰를 작성해주세요...',
+                      hintStyle: const TextStyle(color: Color(0xFF6B7280)), // Gray 500 - 명도 대비 개선
+                      filled: true,
+                      fillColor: const Color(0xFFF9FAFB),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFF3B82F6), width: 2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // 사진 추가 버튼
+                  _buildPhotoPickerSection(),
+                  const SizedBox(height: 16),
+                  
+                  // 리뷰 등록 버튼
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _isSubmittingReview ? null : _submitReview,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF3B82F6),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: _isSubmittingReview
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                              ),
+                            )
+                          : const Text(
+                              '리뷰 등록하기',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAddressRow({required String label, required String address}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(Icons.location_on_outlined, color: Color(0xFF6B7280), size: 20), // Gray 500 - 명도 대비 개선
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                address,
+                style: const TextStyle(
+                  fontSize: 15,
+                  color: Color(0xFF374151),
+                ),
+              ),
+            ],
+          ),
+        ),
+        InkWell(
+          onTap: () => _copyToClipboard(address, label),
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              border: Border.all(color: const Color(0xFFE5E7EB)),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.copy, size: 16, color: Color(0xFF6B7280)),
+                SizedBox(width: 4),
+                Text(
+                  '복사',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF6B7280),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatItem(String label, String value, IconData icon) {
+    return Column(
+      children: [
+        Icon(icon, color: const Color(0xFF6B7280), size: 24), // Gray 500 - 명도 대비 개선
+        const SizedBox(height: 8),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF1F2937),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF6B7280),
+            fontSize: 13,
+          ),
+        ),
+      ],
+    );
+  }
+  
+  /// 사용자 리뷰 목록 섹션
+  Widget _buildUserReviewsSection() {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 헤더
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '사용자 리뷰 (${_reviewSummary?.totalReviews ?? 0})',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF111827),
+                ),
+              ),
+              if (_reviewSummary != null && _reviewSummary!.averageRating != null)
+                Row(
+                  children: [
+                    const Icon(Icons.star, color: Colors.amber, size: 20),
+                    const SizedBox(width: 4),
+                    Text(
+                      _reviewSummary!.averageRating!.toStringAsFixed(1),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF374151),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          
+          // 리뷰 목록
+          if (_isLoadingReviews)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(20),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (_reviews.isEmpty)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: Column(
+                  children: [
+                    Icon(Icons.rate_review_outlined, size: 48, color: Color(0xFF6B7280)), // Gray 500 - 명도 대비 개선
+                    SizedBox(height: 12),
+                    Text(
+                      '아직 리뷰가 없습니다',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Color(0xFF6B7280),
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      '첫 번째 리뷰를 작성해보세요!',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _reviews.length,
+              separatorBuilder: (context, index) => const Divider(height: 24),
+              itemBuilder: (context, index) => _buildReviewItem(_reviews[index]),
+            ),
+        ],
+      ),
+    );
+  }
+  
+  /// 개별 리뷰 아이템
+  Widget _buildReviewItem(UserReview review) {
+    final dateFormat = DateFormat('yyyy년 M월 d일');
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 사용자 정보 및 평점
+        Row(
+          children: [
+            // 프로필 아바타
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: const Color(0xFF3B82F6),
+              backgroundImage: review.user?.profileImageUrl != null
+                  ? NetworkImage(review.user!.profileImageUrl!)
+                  : null,
+              child: review.user?.profileImageUrl == null
+                  ? Text(
+                      (review.user?.displayName ?? '?')[0].toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            
+            // 이름 및 평점
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    review.user?.displayName ?? '익명',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF111827),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      // 별점
+                      ...List.generate(5, (index) {
+                        return Icon(
+                          index < review.rating ? Icons.star : Icons.star_border,
+                          color: Colors.amber,
+                          size: 16,
+                        );
+                      }),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${review.rating}점',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Color(0xFF6B7280),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            
+            // 날짜
+            Text(
+              dateFormat.format(review.createdAt),
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
+              ),
+            ),
+          ],
+        ),
+        
+        // 리뷰 내용
+        if (review.content != null && review.content!.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(
+            review.content!,
+            style: const TextStyle(
+              fontSize: 14,
+              color: Color(0xFF374151),
+              height: 1.5,
+            ),
+          ),
+        ],
+        
+        // 리뷰 사진
+        if (review.photos.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 100,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: review.photos.length,
+              separatorBuilder: (context, index) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final photo = review.photos[index];
+                return GestureDetector(
+                  onTap: () => _showPhotoViewer(review.photos.map((p) => p.photoUrl).toList(), index),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      photo.photoUrl,
+                      width: 100,
+                      height: 100,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) => Container(
+                        width: 100,
+                        height: 100,
+                        color: Colors.grey[200],
+                        child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+        
+        // 좋아요/싫어요 버튼
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            _buildReactionButton(
+              icon: Icons.thumb_up_outlined,
+              count: review.likeCount,
+              onTap: () {
+                // TODO: 좋아요 기능 구현
+              },
+            ),
+            const SizedBox(width: 16),
+            _buildReactionButton(
+              icon: Icons.thumb_down_outlined,
+              count: review.dislikeCount,
+              onTap: () {
+                // TODO: 싫어요 기능 구현
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+  
+  /// 좋아요/싫어요 버튼 - Apple HIG: 최소 44x44pt 터치 영역 확보
+  Widget _buildReactionButton({
+    required IconData icon,
+    required int count,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(22),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 44), // Apple HIG 최소 터치 영역
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border.all(color: const Color(0xFFE5E7EB)),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: const Color(0xFF6B7280)),
+            const SizedBox(width: 6),
+            Text(
+              count.toString(),
+              style: const TextStyle(
+                fontSize: 14,
+                color: Color(0xFF6B7280),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  /// 사진 뷰어 표시
+  void _showPhotoViewer(List<String> photos, int initialIndex) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: EdgeInsets.zero,
+        child: Stack(
+          children: [
+            PageView.builder(
+              controller: PageController(initialPage: initialIndex),
+              itemCount: photos.length,
+              itemBuilder: (context, index) {
+                return InteractiveViewer(
+                  child: Center(
+                    child: Image.network(
+                      photos[index],
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                );
+              },
+            ),
+            Positioned(
+              top: 40,
+              right: 16,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  /// 사진 선택 섹션
+  Widget _buildPhotoPickerSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              '사진 추가 (선택)',
+              style: TextStyle(
+                fontSize: 14,
+                color: Color(0xFF6B7280),
+              ),
+            ),
+            Text(
+              '${_selectedPhotos.length}/$_maxPhotos',
+              style: const TextStyle(
+                fontSize: 14,
+                color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        
+        // 선택된 사진 미리보기 + 추가 버튼
+        SizedBox(
+          height: 80,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            children: [
+              // 사진 추가 버튼
+              if (_selectedPhotos.length < _maxPhotos)
+                GestureDetector(
+                  onTap: _pickPhotos,
+                  child: Container(
+                    width: 80,
+                    height: 80,
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0xFFE5E7EB), width: 2),
+                      borderRadius: BorderRadius.circular(12),
+                      color: const Color(0xFFF9FAFB),
+                    ),
+                    child: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.add_photo_alternate, color: Color(0xFF6B7280), size: 28), // Gray 500 - 명도 대비 개선
+                        SizedBox(height: 4),
+                        Text(
+                          '사진 추가',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              
+              // 선택된 사진들
+              ..._selectedPhotos.asMap().entries.map((entry) {
+                final index = entry.key;
+                final file = entry.value;
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      width: 80,
+                      height: 80,
+                      margin: const EdgeInsets.only(right: 8),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        image: DecorationImage(
+                          image: FileImage(file),
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                    // Apple HIG: 최소 44x44pt 터치 영역 확보
+                    Positioned(
+                      top: -8,
+                      right: 0,
+                      child: GestureDetector(
+                        onTap: () => _removePhoto(index),
+                        behavior: HitTestBehavior.opaque,
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          alignment: Alignment.center,
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: const BoxDecoration(
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.close,
+                              size: 14,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }),
+            ],
+          ),
+        ),
+        
+        // 안내 문구
+        if (_selectedPhotos.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              '사진은 자동으로 500KB 미만으로 압축됩니다.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey[500],
+              ),
+            ),
+          ),
+        
+        // 업로드 중 표시
+        if (_isUploadingPhotos)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 8),
+                Text(
+                  '사진 업로드 중...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF6B7280),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}

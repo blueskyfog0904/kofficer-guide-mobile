@@ -1,0 +1,9 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    prefer_const_constructors: true
+    prefer_const_literals_to_create_immutables: true
+    avoid_print: false  # 개발 중 로그 허용
+    use_build_context_synchronously: false # 편의상 비활성화
+
