@@ -14,6 +14,11 @@
 -keep class io.supabase.** { *; }
 -dontwarn io.supabase.**
 
+# Google Play Core (Deferred Components) - Flutter 내부 참조용
+-dontwarn com.google.android.play.core.splitcompat.SplitCompatApplication
+-dontwarn com.google.android.play.core.splitinstall.**
+-dontwarn com.google.android.play.core.tasks.**
+
 # Keep annotations
 -keepattributes *Annotation*
 -keepattributes Signature

@@ -125,10 +125,36 @@ class _MapScreenState extends State<MapScreen> {
 
       print('✅ Current location: ${position.latitude}, ${position.longitude}');
 
-      setState(() {
-        _currentPosition = position;
-        _isLoadingLocation = false;
-      });
+      // 한국 좌표 범위 확인 (위도 33~43, 경도 124~132)
+      // 범위 밖이면 에뮬레이터나 해외로 간주하여 서울 기본 좌표 사용
+      final bool isInKorea = _isLocationInKorea(position.latitude, position.longitude);
+      
+      if (isInKorea) {
+        // 실제 한국 내 위치 - 그대로 사용
+        setState(() {
+          _currentPosition = position;
+          _isLoadingLocation = false;
+        });
+        print('📍 Using actual location (Korea)');
+      } else {
+        // 에뮬레이터나 해외 위치 - 테스트용 서울 기본 좌표 사용
+        setState(() {
+          _currentPosition = Position(
+            latitude: 37.5665,
+            longitude: 126.9780,
+            timestamp: DateTime.now(),
+            accuracy: 0,
+            altitude: 0,
+            altitudeAccuracy: 0,
+            heading: 0,
+            headingAccuracy: 0,
+            speed: 0,
+            speedAccuracy: 0,
+          );
+          _isLoadingLocation = false;
+        });
+        print('⚠️ Location outside Korea (${position.latitude}, ${position.longitude}) - Using default Seoul location for testing');
+      }
 
       // 위치를 가져온 후 주변 음식점 검색
       _searchNearbyRestaurants();
@@ -159,6 +185,20 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   double _toRadians(double degree) => degree * pi / 180;
+  
+  /// 좌표가 한국 범위 내에 있는지 확인
+  /// 한국 범위: 위도 33~43, 경도 124~132
+  bool _isLocationInKorea(double latitude, double longitude) {
+    const double minLat = 33.0;  // 제주도 남쪽
+    const double maxLat = 43.0;  // 북한 북쪽
+    const double minLng = 124.0; // 서해
+    const double maxLng = 132.0; // 동해 (독도 포함)
+    
+    return latitude >= minLat && 
+           latitude <= maxLat && 
+           longitude >= minLng && 
+           longitude <= maxLng;
+  }
   
   /// 거리를 보기 좋게 포맷팅
   String _formatDistance(double distanceKm) {
