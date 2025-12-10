@@ -358,7 +358,7 @@ class _LoginScreenState extends State<_LoginScreen> with SingleTickerProviderSta
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    CupertinoIcons.apple_logo,
+                    Icons.apple,
                     size: 20,
                     color: isDark ? Colors.black : Colors.white,
                   ),
