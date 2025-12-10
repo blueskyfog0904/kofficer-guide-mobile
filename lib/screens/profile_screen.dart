@@ -1,7 +1,12 @@
+import 'dart:io';
+import 'dart:ui';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
+import '../services/user_service.dart';
 import 'my_info_screen.dart';
+import 'signup_terms_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -10,37 +15,302 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final authService = context.watch<AuthService>();
     
-    // 카카오 로그인 상태 확인
     if (authService.isLoggedIn) {
-      // 로그인됨: 내 정보 관리 화면 (메뉴 리스트)
       return const MyInfoScreen();
     }
     
-    // 로그인하지 않은 상태: 카카오 로그인 UI 표시
     return _LoginScreen(authService: authService);
   }
 }
 
-/// 로그인 화면 (카카오로 시작하기)
-class _LoginScreen extends StatelessWidget {
+class _LoginScreen extends StatefulWidget {
   final AuthService authService;
   
   const _LoginScreen({required this.authService});
 
-  Widget _buildInfoItem(String text) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('• ', style: TextStyle(color: Colors.blue.shade700)),
-          Expanded(
-            child: Text(
-              text,
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.blue.shade700,
+  @override
+  State<_LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<_LoginScreen> with SingleTickerProviderStateMixin {
+  final UserService _userService = UserService();
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
+    _fadeAnimation = CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeOut,
+    );
+    _animationController.forward();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleAppleLogin() async {
+    final result = await widget.authService.loginWithApple();
+    
+    if (!mounted) return;
+
+    switch (result) {
+      case LoginResult.success:
+        break;
+      case LoginResult.needsSignup:
+        _showSignupScreen();
+        break;
+      case LoginResult.cancelled:
+        break;
+      case LoginResult.failed:
+        _showErrorDialog();
+        break;
+    }
+  }
+
+  void _showErrorDialog() {
+    showCupertinoDialog(
+      context: context,
+      builder: (context) => CupertinoAlertDialog(
+        title: const Text('로그인 실패'),
+        content: const Text('로그인 중 문제가 발생했습니다.\n잠시 후 다시 시도해 주세요.'),
+        actions: [
+          CupertinoDialogAction(
+            child: const Text('확인'),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSignupScreen() {
+    Navigator.of(context).push(
+      CupertinoPageRoute(
+        builder: (_) => SignupTermsScreen(
+          onAgreeComplete: () async {
+            final userId = widget.authService.userId;
+            if (userId != null) {
+              final profileCreated = await _userService.createAppleProfile(userId);
+              final termsConsented = await _userService.saveTermsConsent(userId);
+              
+              if (profileCreated && termsConsented) {
+                widget.authService.completeAppleSignup();
+                if (mounted) {
+                  Navigator.of(context).pop();
+                }
+              } else {
+                if (mounted) {
+                  _showErrorDialog();
+                }
+              }
+            }
+          },
+          onCancel: () async {
+            await widget.authService.cancelAppleSignup();
+            if (mounted) {
+              Navigator.of(context).pop();
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = MediaQuery.of(context).platformBrightness == Brightness.dark;
+    
+    return Scaffold(
+      backgroundColor: isDark ? const Color(0xFF000000) : const Color(0xFFF2F2F7),
+      body: SafeArea(
+        child: FadeTransition(
+          opacity: _fadeAnimation,
+          child: CustomScrollView(
+            slivers: [
+              // iOS 스타일 Large Title
+              CupertinoSliverNavigationBar(
+                largeTitle: const Text('내 정보'),
+                backgroundColor: isDark ? const Color(0xFF000000) : const Color(0xFFF2F2F7),
+                border: null,
               ),
+              
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 40),
+                      
+                      // 프로필 아이콘
+                      Container(
+                        width: 100,
+                        height: 100,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Colors.grey.shade300,
+                              Colors.grey.shade400,
+                            ],
+                          ),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          CupertinoIcons.person_fill,
+                          size: 50,
+                          color: Colors.white,
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 28),
+                      
+                      // 타이틀
+                      Text(
+                        '로그인하고\n더 많은 기능을 사용하세요',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.5,
+                          height: 1.25,
+                          color: isDark ? Colors.white : const Color(0xFF1C1C1E),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 12),
+                      
+                      Text(
+                        '즐겨찾기, 리뷰 작성 등 모든 기능을 이용할 수 있습니다',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 15,
+                          color: isDark ? Colors.grey.shade400 : const Color(0xFF8E8E93),
+                          height: 1.4,
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 48),
+                      
+                      // 기능 소개 카드
+                      _buildFeaturesCard(isDark),
+                      
+                      const SizedBox(height: 40),
+                      
+                      // 로그인 버튼들
+                      _buildLoginButtons(isDark),
+                      
+                      const SizedBox(height: 20),
+                      
+                      // 안내 문구
+                      Text(
+                        '처음 이용 시 간단한 약관 동의 후 가입됩니다',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isDark ? Colors.grey.shade500 : const Color(0xFF8E8E93),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 60),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFeaturesCard(bool isDark) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          _buildFeatureRow(
+            icon: CupertinoIcons.heart_fill,
+            iconColor: const Color(0xFFFF3B30),
+            title: '즐겨찾기',
+            subtitle: '마음에 드는 맛집을 저장하세요',
+            isDark: isDark,
+          ),
+          _buildDivider(isDark),
+          _buildFeatureRow(
+            icon: CupertinoIcons.star_fill,
+            iconColor: const Color(0xFFFF9500),
+            title: '리뷰 작성',
+            subtitle: '방문 경험을 공유하세요',
+            isDark: isDark,
+          ),
+          _buildDivider(isDark),
+          _buildFeatureRow(
+            icon: CupertinoIcons.bell_fill,
+            iconColor: const Color(0xFF007AFF),
+            title: '알림',
+            subtitle: '새로운 소식을 받아보세요',
+            isDark: isDark,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFeatureRow({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required bool isDark,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: iconColor.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: iconColor, size: 22),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white : const Color(0xFF1C1C1E),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: isDark ? Colors.grey.shade400 : const Color(0xFF8E8E93),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -48,231 +318,101 @@ class _LoginScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildFeatureItem(IconData icon, Color color, String title, String description) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildDivider(bool isDark) {
+    return Container(
+      height: 0.5,
+      margin: const EdgeInsets.only(left: 60),
+      color: isDark ? Colors.grey.shade800 : const Color(0xFFE5E5EA),
+    );
+  }
+
+  Widget _buildLoginButtons(bool isDark) {
+    return Column(
       children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(icon, size: 18, color: color),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
-                  color: Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                description,
-                style: TextStyle(
-                  fontSize: 13,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-            ],
-          ),
-        ),
+        // Apple 로그인 버튼 (iOS만)
+        if (Platform.isIOS) ...[
+          _buildAppleSignInButton(isDark),
+          const SizedBox(height: 12),
+        ],
+        
+        // 카카오 로그인 버튼
+        _buildKakaoSignInButton(isDark),
       ],
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('내 정보'),
-        centerTitle: true,
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          children: [
-            const SizedBox(height: 40),
-            
-            // 로고
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(Icons.person_outline, size: 40, color: Colors.grey.shade400),
-            ),
-            
-            const SizedBox(height: 24),
-            
-            const Text(
-              '로그인이 필요합니다',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-            ),
-            
-            const SizedBox(height: 12),
-            
-            Text(
-              '카카오 계정으로 간편하게 시작하세요',
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade600,
-              ),
-            ),
-            
-            const SizedBox(height: 32),
-            
-            // 카카오 로그인 혜택 안내
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.blue.shade100),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildAppleSignInButton(bool isDark) {
+    return SizedBox(
+      width: double.infinity,
+      height: 54,
+      child: CupertinoButton(
+        padding: EdgeInsets.zero,
+        color: isDark ? Colors.white : Colors.black,
+        borderRadius: BorderRadius.circular(14),
+        onPressed: widget.authService.isLoading ? null : _handleAppleLogin,
+        child: widget.authService.isLoading
+            ? CupertinoActivityIndicator(
+                color: isDark ? Colors.black : Colors.white,
+              )
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue.shade700, size: 20),
-                      const SizedBox(width: 8),
-                      Text(
-                        '회원 혜택',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                          color: Colors.blue.shade700,
-                        ),
-                      ),
-                    ],
+                  Icon(
+                    CupertinoIcons.apple_logo,
+                    size: 20,
+                    color: isDark ? Colors.black : Colors.white,
                   ),
-                  const SizedBox(height: 12),
-                  _buildInfoItem('즐겨찾기한 음식점을 저장하고 관리'),
-                  _buildInfoItem('리뷰 작성 및 다른 사용자와 소통'),
-                  _buildInfoItem('맞춤 추천 서비스 이용'),
-                ],
-              ),
-            ),
-            
-            const SizedBox(height: 32),
-            
-            // 카카오로 시작하기 버튼
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: ElevatedButton(
-                onPressed: authService.isLoading 
-                    ? null 
-                    : () => authService.loginWithKakao(),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFFEE500),
-                  foregroundColor: Colors.black87,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: authService.isLoading
-                    ? const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Image.network(
-                            'https://developers.kakao.com/assets/img/about/logos/kakaolink/kakaolink_btn_small.png',
-                            width: 24,
-                            height: 24,
-                            errorBuilder: (context, error, stackTrace) => 
-                                const Icon(Icons.chat_bubble, size: 24),
-                          ),
-                          const SizedBox(width: 8),
-                          const Text(
-                            '카카오로 시작하기',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-              ),
-            ),
-            
-            const SizedBox(height: 16),
-            
-            Text(
-              '처음 이용 시 자동으로 회원가입됩니다',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey.shade500,
-              ),
-            ),
-            
-            const SizedBox(height: 48),
-            
-            // 주요 기능 안내
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '주요 기능',
+                  const SizedBox(width: 8),
+                  Text(
+                    'Apple로 계속하기',
                     style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: Colors.black87,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.black : Colors.white,
+                      letterSpacing: -0.4,
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  _buildFeatureItem(
-                    Icons.favorite,
-                    Colors.red,
-                    '즐겨찾기',
-                    '자주 가는 음식점을 저장하세요',
+                ],
+              ),
+      ),
+    );
+  }
+
+  Widget _buildKakaoSignInButton(bool isDark) {
+    return SizedBox(
+      width: double.infinity,
+      height: 54,
+      child: CupertinoButton(
+        padding: EdgeInsets.zero,
+        color: const Color(0xFFFEE500),
+        borderRadius: BorderRadius.circular(14),
+        onPressed: widget.authService.isLoading 
+            ? null 
+            : () => widget.authService.loginWithKakao(),
+        child: widget.authService.isLoading
+            ? const CupertinoActivityIndicator(color: Color(0xFF3C1E1E))
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Image.network(
+                    'https://developers.kakao.com/assets/img/about/logos/kakaolink/kakaolink_btn_small.png',
+                    width: 20,
+                    height: 20,
+                    errorBuilder: (context, error, stackTrace) => 
+                        const Icon(CupertinoIcons.chat_bubble_fill, size: 20, color: Color(0xFF3C1E1E)),
                   ),
-                  const SizedBox(height: 16),
-                  _buildFeatureItem(
-                    Icons.rate_review,
-                    Colors.amber,
-                    '리뷰 작성',
-                    '방문 후기를 남기고 공유하세요',
-                  ),
-                  const SizedBox(height: 16),
-                  _buildFeatureItem(
-                    Icons.notifications,
-                    Colors.blue,
-                    '알림',
-                    '새로운 소식을 받아보세요',
+                  const SizedBox(width: 8),
+                  const Text(
+                    '카카오로 계속하기',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF3C1E1E),
+                      letterSpacing: -0.4,
+                    ),
                   ),
                 ],
               ),
-            ),
-          ],
-        ),
       ),
     );
   }
