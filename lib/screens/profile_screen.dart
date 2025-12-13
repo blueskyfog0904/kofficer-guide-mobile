@@ -136,11 +136,20 @@ class _LoginScreenState extends State<_LoginScreen> with SingleTickerProviderSta
           opacity: _fadeAnimation,
           child: CustomScrollView(
             slivers: [
-              // iOS 스타일 Large Title
-              CupertinoSliverNavigationBar(
-                largeTitle: const Text('내 정보'),
-                backgroundColor: isDark ? const Color(0xFF000000) : const Color(0xFFF2F2F7),
-                border: null,
+              // 중앙정렬된 '내 정보' 헤더
+              SliverToBoxAdapter(
+                child: Container(
+                  padding: const EdgeInsets.only(top: 8, bottom: 16),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '내 정보',
+                    style: TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : const Color(0xFF1C1C1E),
+                    ),
+                  ),
+                ),
               ),
               
               SliverToBoxAdapter(
@@ -174,6 +183,22 @@ class _LoginScreenState extends State<_LoginScreen> with SingleTickerProviderSta
                       
                       const SizedBox(height: 28),
                       
+                      // 로그인 버튼들
+                      _buildLoginButtons(isDark),
+                      
+                      const SizedBox(height: 12),
+                      
+                      // 안내 문구
+                      Text(
+                        '처음 이용 시 간단한 약관 동의 후 가입됩니다',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isDark ? Colors.grey.shade500 : const Color(0xFF8E8E93),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 40),
+                      
                       // 타이틀
                       Text(
                         '로그인하고\n더 많은 기능을 사용하세요',
@@ -203,22 +228,6 @@ class _LoginScreenState extends State<_LoginScreen> with SingleTickerProviderSta
                       
                       // 기능 소개 카드
                       _buildFeaturesCard(isDark),
-                      
-                      const SizedBox(height: 40),
-                      
-                      // 로그인 버튼들
-                      _buildLoginButtons(isDark),
-                      
-                      const SizedBox(height: 20),
-                      
-                      // 안내 문구
-                      Text(
-                        '처음 이용 시 간단한 약관 동의 후 가입됩니다',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: isDark ? Colors.grey.shade500 : const Color(0xFF8E8E93),
-                        ),
-                      ),
                       
                       const SizedBox(height: 60),
                     ],
@@ -329,14 +338,14 @@ class _LoginScreenState extends State<_LoginScreen> with SingleTickerProviderSta
   Widget _buildLoginButtons(bool isDark) {
     return Column(
       children: [
-        // Apple 로그인 버튼 (iOS만)
-        if (Platform.isIOS) ...[
-          _buildAppleSignInButton(isDark),
-          const SizedBox(height: 12),
-        ],
-        
         // 카카오 로그인 버튼
         _buildKakaoSignInButton(isDark),
+        
+        // Apple 로그인 버튼 (iOS만)
+        if (Platform.isIOS) ...[
+          const SizedBox(height: 12),
+          _buildAppleSignInButton(isDark),
+        ],
       ],
     );
   }

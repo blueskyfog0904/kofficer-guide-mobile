@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/restaurant.dart';
 import '../models/user_activity.dart';
@@ -41,6 +42,67 @@ class UserProfile {
 
 class UserService {
   final SupabaseClient _client = SupabaseService().client;
+
+  String _generateRandomNickname() {
+    final random = Random();
+    final suffix = random.nextInt(9000) + 1000;
+    return '맛집탐험가_$suffix';
+  }
+
+  String _generateRandomEmail(String userId) {
+    final shortId = userId.substring(0, 8);
+    return 'apple_$shortId@kofficer.app';
+  }
+
+  Future<bool> createAppleProfile(String userId) async {
+    try {
+      final nickname = _generateRandomNickname();
+      final email = _generateRandomEmail(userId);
+
+      await _client.from('profiles').insert({
+        'user_id': userId,
+        'email': email,
+        'nickname': nickname,
+        'mob_nickname': nickname,
+        'provider': 'apple',
+        'created_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      });
+
+      print('✅ Apple 프로필 생성 완료: $nickname');
+      return true;
+    } catch (e) {
+      print('Error creating Apple profile: $e');
+      return false;
+    }
+  }
+
+  Future<bool> saveTermsConsent(String userId) async {
+    try {
+      final termsResponse = await _client
+          .from('terms_versions')
+          .select('id, version')
+          .eq('is_required', true);
+
+      final terms = termsResponse as List;
+      
+      for (final term in terms) {
+        await _client.from('user_terms_consents').insert({
+          'user_id': userId,
+          'terms_id': term['id'],
+          'version': term['version'],
+          'agreed': true,
+          'agreed_at': DateTime.now().toIso8601String(),
+        });
+      }
+
+      print('✅ 약관 동의 저장 완료');
+      return true;
+    } catch (e) {
+      print('Error saving terms consent: $e');
+      return false;
+    }
+  }
 
   // 사용자 프로필 조회 (user_id로)
   Future<UserProfile?> getProfile(String userId) async {

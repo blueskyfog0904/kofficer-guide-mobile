@@ -24,6 +24,11 @@ class SupabaseService {
     await Supabase.initialize(
       url: url,
       anonKey: anonKey,
+      authOptions: const FlutterAuthClientOptions(
+        // Supabase가 자동으로 딥링크를 처리하지 않도록 설정
+        // 카카오 로그인 딥링크와 충돌 방지
+        authFlowType: AuthFlowType.implicit,
+      ),
     );
   }
 

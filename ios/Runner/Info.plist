@@ -50,6 +50,8 @@
 		<string>주변 맛집을 찾기 위해 현재 위치 정보가 필요합니다.</string>
 		<key>NSLocationAlwaysUsageDescription</key>
 		<string>주변 맛집을 찾기 위해 현재 위치 정보가 필요합니다.</string>
+		<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+		<string>주변 맛집을 찾기 위해 현재 위치 정보가 필요합니다.</string>
 		<!-- 카메라 및 사진 라이브러리 권한 (리뷰 사진 업로드용) -->
 		<key>NSCameraUsageDescription</key>
 		<string>리뷰 사진을 촬영하기 위해 카메라 접근 권한이 필요합니다.</string>
@@ -80,6 +82,14 @@
 				<key>CFBundleURLSchemes</key>
 				<array>
 					<string>kakao$(KAKAO_NATIVE_APP_KEY)</string>
+				</array>
+			</dict>
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>com.thenaum.kofficerguide</string>
 				</array>
 			</dict>
 		</array>
