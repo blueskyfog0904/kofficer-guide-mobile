@@ -71,6 +71,52 @@ class Restaurant {
           .toList(),
     );
   }
+
+  Restaurant copyWith({
+    String? id,
+    String? name,
+    String? title,
+    String? address,
+    String? roadAddress,
+    double? latitude,
+    double? longitude,
+    String? category,
+    String? subCategory,
+    String? regionId,
+    String? subAdd1,
+    String? subAdd2,
+    String? primaryPhotoUrl,
+    bool? isActive,
+    int? reviewCount,
+    double? avgRating,
+    int? visitCount,
+    int? rankPosition,
+    int? regionRank,
+    List<RestaurantImage>? images,
+  }) {
+    return Restaurant(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      title: title ?? this.title,
+      address: address ?? this.address,
+      roadAddress: roadAddress ?? this.roadAddress,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      category: category ?? this.category,
+      subCategory: subCategory ?? this.subCategory,
+      regionId: regionId ?? this.regionId,
+      subAdd1: subAdd1 ?? this.subAdd1,
+      subAdd2: subAdd2 ?? this.subAdd2,
+      primaryPhotoUrl: primaryPhotoUrl ?? this.primaryPhotoUrl,
+      isActive: isActive ?? this.isActive,
+      reviewCount: reviewCount ?? this.reviewCount,
+      avgRating: avgRating ?? this.avgRating,
+      visitCount: visitCount ?? this.visitCount,
+      rankPosition: rankPosition ?? this.rankPosition,
+      regionRank: regionRank ?? this.regionRank,
+      images: images ?? this.images,
+    );
+  }
 }
 
 class RestaurantImage {
@@ -91,7 +137,7 @@ class RestaurantImage {
   factory RestaurantImage.fromJson(Map<String, dynamic> json) {
     return RestaurantImage(
       id: json['id'] ?? '',
-      imageUrl: json['image_url'] ?? '',
+      imageUrl: json['image_url'] ?? json['photo_url'] ?? '', // photo_url 폴백 추가
       imageType: json['image_type'] ?? 'main',
       altText: json['alt_text'],
       displayOrder: json['display_order'] ?? 0,

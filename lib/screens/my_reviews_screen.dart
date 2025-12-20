@@ -1,8 +1,11 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../models/user_activity.dart';
 import '../services/auth_service.dart';
 import '../services/user_service.dart';
+import '../services/restaurant_service.dart';
 import 'restaurant_detail_screen.dart';
 
 /// 작성한 리뷰 화면
@@ -15,6 +18,9 @@ class MyReviewsScreen extends StatefulWidget {
 
 class _MyReviewsScreenState extends State<MyReviewsScreen> {
   final _userService = UserService();
+  final _restaurantService = RestaurantService();
+  final _imagePicker = ImagePicker();
+  static const int _maxPhotos = 5;
   List<Review> _reviews = [];
   bool _isLoading = true;
 
@@ -47,6 +53,10 @@ class _MyReviewsScreenState extends State<MyReviewsScreen> {
   Future<void> _showEditReviewDialog(Review review) async {
     final contentController = TextEditingController(text: review.content);
     int selectedRating = review.rating;
+    List<ReviewPhotoSimple> existingPhotos = List.from(review.photos);
+    List<File> newPhotos = [];
+    List<String> photosToDelete = [];
+    bool isUpdating = false;
     
     final result = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
@@ -62,78 +72,280 @@ class _MyReviewsScreenState extends State<MyReviewsScreen> {
             top: 16,
             bottom: MediaQuery.of(context).viewInsets.bottom + 16,
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    '리뷰 수정',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              
-              // 별점 선택
-              const Text('별점', style: TextStyle(fontWeight: FontWeight.w500)),
-              const SizedBox(height: 8),
-              Row(
-                children: List.generate(5, (index) {
-                  return IconButton(
-                    icon: Icon(
-                      index < selectedRating ? Icons.star : Icons.star_border,
-                      color: Colors.amber,
-                      size: 32,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      '리뷰 수정',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     ),
-                    onPressed: () {
-                      setModalState(() => selectedRating = index + 1);
-                    },
-                  );
-                }),
-              ),
-              const SizedBox(height: 16),
-              
-              // 내용 입력
-              const Text('내용', style: TextStyle(fontWeight: FontWeight.w500)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: contentController,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: '리뷰 내용을 입력하세요',
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 16),
-              
-              // 저장 버튼
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(context, {
-                      'rating': selectedRating,
-                      'content': contentController.text.trim(),
-                    });
+                const SizedBox(height: 16),
+                
+                // 별점 선택
+                const Text('별점', style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 8),
+                Row(
+                  children: List.generate(5, (index) {
+                    return IconButton(
+                      icon: Icon(
+                        index < selectedRating ? Icons.star : Icons.star_border,
+                        color: Colors.amber,
+                        size: 32,
+                      ),
+                      onPressed: () {
+                        setModalState(() => selectedRating = index + 1);
+                      },
+                    );
+                  }),
+                ),
+                const SizedBox(height: 16),
+                
+                // 내용 입력
+                const Text('내용', style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: contentController,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: '리뷰 내용을 입력하세요',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                // 사진 섹션
+                const Text('사진', style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 8),
+                if (existingPhotos.isNotEmpty || newPhotos.isNotEmpty)
+                  SizedBox(
+                    height: 80,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        // 기존 사진
+                        ...existingPhotos.where((p) => !photosToDelete.contains(p.id)).map((photo) {
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: Stack(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.network(
+                                    photo.photoUrl,
+                                    width: 80,
+                                    height: 80,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Container(
+                                      width: 80,
+                                      height: 80,
+                                      color: Colors.grey[200],
+                                      child: const Icon(Icons.image_not_supported),
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setModalState(() {
+                                        photosToDelete.add(photo.id);
+                                      });
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.all(2),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.red,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(Icons.close, size: 16, color: Colors.white),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                        // 새 사진
+                        ...newPhotos.asMap().entries.map((entry) {
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: Stack(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.file(
+                                    entry.value,
+                                    width: 80,
+                                    height: 80,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setModalState(() {
+                                        newPhotos.removeAt(entry.key);
+                                      });
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.all(2),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.red,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(Icons.close, size: 16, color: Colors.white),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                
+                // 사진 추가 버튼
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final currentPhotoCount = existingPhotos.length - photosToDelete.length + newPhotos.length;
+                    if (currentPhotoCount >= _maxPhotos) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('사진은 최대 $_maxPhotos장까지 추가할 수 있습니다.')),
+                      );
+                      return;
+                    }
+                    
+                    final pickedFiles = await _imagePicker.pickMultiImage(
+                      maxWidth: 1920,
+                      maxHeight: 1920,
+                    );
+                    if (pickedFiles.isNotEmpty) {
+                      final remainingSlots = _maxPhotos - currentPhotoCount;
+                      final filesToAdd = pickedFiles.take(remainingSlots).map((f) => File(f.path)).toList();
+                      setModalState(() {
+                        newPhotos.addAll(filesToAdd);
+                      });
+                    }
                   },
-                  child: const Text('저장'),
+                  icon: const Icon(Icons.add_photo_alternate, size: 18),
+                  label: Text('사진 추가 (${existingPhotos.length - photosToDelete.length + newPhotos.length}/$_maxPhotos)'),
                 ),
-              ),
-            ],
+                const SizedBox(height: 16),
+                
+                // 저장 버튼
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: isUpdating ? null : () {
+                      Navigator.pop(context, {
+                        'rating': selectedRating,
+                        'content': contentController.text.trim(),
+                        'photosToDelete': photosToDelete,
+                        'newPhotos': newPhotos,
+                      });
+                    },
+                    child: isUpdating
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Text('저장'),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
 
     if (result != null) {
-      await _updateReview(review.id, result['rating'], result['content']);
+      await _updateReviewWithPhotos(
+        review,
+        result['rating'],
+        result['content'],
+        result['photosToDelete'] as List<String>,
+        result['newPhotos'] as List<File>,
+      );
+    }
+  }
+
+  /// 리뷰 수정 (사진 포함)
+  Future<void> _updateReviewWithPhotos(
+    Review review,
+    int rating,
+    String content,
+    List<String> photosToDelete,
+    List<File> newPhotos,
+  ) async {
+    final authService = context.read<AuthService>();
+    final userId = authService.userId;
+    
+    if (userId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('로그인이 필요합니다.')),
+        );
+      }
+      return;
+    }
+    
+    try {
+      // 1. 리뷰 내용 수정
+      await _restaurantService.updateReview(
+        reviewId: review.id,
+        userId: userId,
+        rating: rating,
+        content: content,
+      );
+      
+      // 2. 삭제할 사진 처리
+      for (var photoId in photosToDelete) {
+        try {
+          await _restaurantService.deleteReviewPhoto(
+            photoId: photoId,
+            restaurantId: review.restaurantId,
+          );
+        } catch (e) {
+          print('사진 삭제 실패: $e');
+        }
+      }
+      
+      // 3. 새 사진 업로드 및 DB 연결
+      if (newPhotos.isNotEmpty) {
+        await _restaurantService.uploadAndLinkReviewPhotos(
+          restaurantId: review.restaurantId,
+          userId: userId,
+          reviewId: review.id,
+          photos: newPhotos,
+        );
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('리뷰가 수정되었습니다.')),
+        );
+        _loadReviews();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('리뷰 수정 실패: $e')),
+        );
+      }
     }
   }
 
@@ -301,6 +513,39 @@ class _MyReviewsScreenState extends State<MyReviewsScreen> {
                                 maxLines: 3,
                                 overflow: TextOverflow.ellipsis,
                               ),
+                            
+                            // 사진 미리보기
+                            if (review.photos.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                height: 60,
+                                child: ListView.builder(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: review.photos.length,
+                                  itemBuilder: (context, photoIndex) {
+                                    final photo = review.photos[photoIndex];
+                                    return Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: Image.network(
+                                          photo.photoUrl,
+                                          width: 60,
+                                          height: 60,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) => Container(
+                                            width: 60,
+                                            height: 60,
+                                            color: Colors.grey[200],
+                                            child: const Icon(Icons.image_not_supported, size: 24),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       );

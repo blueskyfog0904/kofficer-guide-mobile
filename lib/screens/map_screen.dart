@@ -62,6 +62,13 @@ class _MapScreenState extends State<MapScreen> {
   
   // 리스트 영역 높이 비율
   final List<double> _listHeightFactors = [0.25, 0.4, 0.6, 1.0];
+  
+  // 음식점 카드의 GlobalKey 맵 (정확한 스크롤 위치 계산용)
+  final Map<String, GlobalKey> _restaurantCardKeys = {};
+  
+  GlobalKey _getCardKey(String restaurantId) {
+    return _restaurantCardKeys.putIfAbsent(restaurantId, () => GlobalKey());
+  }
 
   @override
   void initState() {
@@ -373,15 +380,44 @@ class _MapScreenState extends State<MapScreen> {
   }
   
   void _scrollToRestaurant(int index) {
-    if (_listScrollController.hasClients) {
-      const cardTotalHeight = 112.0;
-      final scrollPosition = cardTotalHeight * index;
-      
-      _listScrollController.animateTo(
-        scrollPosition,
+    if (index < 0 || index >= _restaurants.length) return;
+    
+    final restaurant = _restaurants[index];
+    final key = _restaurantCardKeys[restaurant.id];
+    
+    if (key?.currentContext != null) {
+      // GlobalKey context가 있으면 바로 ensureVisible 사용
+      Scrollable.ensureVisible(
+        key!.currentContext!,
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
+        alignment: 0.0,
       );
+    } else {
+      // GlobalKey context가 없으면 (카드가 화면에 없음)
+      // 1단계: 대략적인 위치로 먼저 스크롤하여 카드를 화면에 가져옴
+      if (_listScrollController.hasClients) {
+        const cardTotalHeight = 112.0;
+        final scrollPosition = cardTotalHeight * index;
+        
+        // jumpTo로 빠르게 대략적 위치로 이동 (카드가 빌드되도록)
+        _listScrollController.jumpTo(
+          scrollPosition.clamp(0.0, _listScrollController.position.maxScrollExtent),
+        );
+        
+        // 2단계: 프레임 빌드 후 ensureVisible로 정확한 위치 조정
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final newKey = _restaurantCardKeys[restaurant.id];
+          if (newKey?.currentContext != null) {
+            Scrollable.ensureVisible(
+              newKey!.currentContext!,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              alignment: 0.0,
+            );
+          }
+        });
+      }
     }
   }
 
@@ -560,7 +596,7 @@ class _MapScreenState extends State<MapScreen> {
 
             controller.addJavaScriptHandler(
               handlerName: 'onMarkerClick',
-              callback: (args) {
+              callback: (args) async {
                 if (args.length >= 3) {
                   final restaurantId = args[0] as String;
                   final isDoubleClick = args[2] as bool? ?? false;
@@ -571,12 +607,33 @@ class _MapScreenState extends State<MapScreen> {
                   final restaurant = _restaurants[restaurantIndex];
 
                   if (isDoubleClick) {
-                    Navigator.push(
+                    final updatedRestaurant = await Navigator.push<Restaurant>(
                       context,
                       MaterialPageRoute(
                         builder: (context) => RestaurantDetailScreen(restaurant: restaurant),
                       ),
                     );
+                    
+                    // 음식점 정보가 업데이트되었으면 리스트에서도 업데이트
+                    if (updatedRestaurant != null && mounted) {
+                      final index = _restaurants.indexWhere((r) => r.id == updatedRestaurant.id);
+                      if (index != -1) {
+                        setState(() {
+                          // 기존 객체에서 regionRank 유지
+                          _restaurants[index] = updatedRestaurant.copyWith(
+                            regionRank: _restaurants[index].regionRank,
+                          );
+                          
+                          // 사진 캐시도 업데이트 (중요: 삭제된 경우 반영)
+                          if (updatedRestaurant.primaryPhotoUrl != null && updatedRestaurant.primaryPhotoUrl!.isNotEmpty) {
+                            _restaurantPhotos[updatedRestaurant.id] = updatedRestaurant.primaryPhotoUrl!;
+                          } else {
+                            // 사진이 없거나 삭제된 경우 캐시에서 제거
+                            _restaurantPhotos.remove(updatedRestaurant.id);
+                          }
+                        });
+                      }
+                    }
                   } else {
                     setState(() {
                       _lastClickedRestaurantId = restaurant.id;
@@ -697,14 +754,36 @@ class _MapScreenState extends State<MapScreen> {
     final distanceText = distance != null ? _formatDistance(distance) : '';
     
     return GestureDetector(
-      onTap: () {
+      key: _getCardKey(restaurant.id),
+      onTap: () async {
         if (_lastClickedRestaurantId == restaurant.id) {
-          Navigator.push(
+          final updatedRestaurant = await Navigator.push<Restaurant>(
             context,
             MaterialPageRoute(
               builder: (context) => RestaurantDetailScreen(restaurant: restaurant),
             ),
           );
+          
+          // 음식점 정보가 업데이트되었으면 리스트에서도 업데이트
+          if (updatedRestaurant != null && mounted) {
+            final index = _restaurants.indexWhere((r) => r.id == updatedRestaurant.id);
+            if (index != -1) {
+              setState(() {
+                // 기존 객체에서 regionRank 유지
+                _restaurants[index] = updatedRestaurant.copyWith(
+                  regionRank: _restaurants[index].regionRank,
+                );
+                
+                // 사진 캐시도 업데이트 (중요: 삭제된 경우 반영)
+                if (updatedRestaurant.primaryPhotoUrl != null && updatedRestaurant.primaryPhotoUrl!.isNotEmpty) {
+                  _restaurantPhotos[updatedRestaurant.id] = updatedRestaurant.primaryPhotoUrl!;
+                } else {
+                  // 사진이 없거나 삭제된 경우 캐시에서 제거
+                  _restaurantPhotos.remove(updatedRestaurant.id);
+                }
+              });
+            }
+          }
         } else {
           setState(() {
             _lastClickedRestaurantId = restaurant.id;

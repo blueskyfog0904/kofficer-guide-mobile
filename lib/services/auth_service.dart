@@ -146,12 +146,15 @@ class AuthService extends ChangeNotifier {
   /// 카카오 토큰을 Supabase 세션으로 교환 (Edge Function 호출)
   Future<bool> _exchangeKakaoToken(String kakaoAccessToken) async {
     try {
+      print('🔐 [EDGE] Edge Function 호출 중... (kakao-login)');
       final response = await _supabase.functions.invoke(
         'kakao-login',
         body: {'access_token': kakaoAccessToken},
       );
       
+      print('🔐 [EDGE] 응답 상태: ${response.status}');
       if (response.status != 200) {
+        print('🔐 [EDGE] ❌ 응답 실패: ${response.data}');
         return false;
       }
       
@@ -159,40 +162,65 @@ class AuthService extends ChangeNotifier {
       final accessToken = data['access_token'] as String?;
       final refreshToken = data['refresh_token'] as String?;
       
+      print('🔐 [EDGE] 토큰 수신: access=${accessToken != null}, refresh=${refreshToken != null}');
+      
       if (accessToken == null || refreshToken == null) {
+        print('🔐 [EDGE] ❌ 토큰 누락');
         return false;
       }
       
       // Supabase 세션 설정
+      print('🔐 [EDGE] Supabase 세션 설정 중...');
       final authResponse = await _supabase.auth.setSession(refreshToken);
       
       if (authResponse.session != null) {
         _userId = authResponse.user?.id;
         _isKakaoLoggedIn = true;
+        print('🔐 [EDGE] ✅ 세션 설정 성공, userId: $_userId');
         return true;
       }
       
+      print('🔐 [EDGE] ❌ 세션 설정 실패');
       return false;
     } catch (e) {
+      print('🔐 [EDGE] ❌ 예외 발생: $e');
       return false;
     }
   }
 
   Future<bool> loginWithKakao() async {
+    print('🔐 [AUTH] loginWithKakao: 시작');
     _isLoading = true;
     notifyListeners();
 
     try {
+      // Android keyHash 출력 (디버깅용)
+      if (Platform.isAndroid) {
+        try {
+          final keyHash = await KakaoSdk.origin;
+          print('🔑 [KEYHASH] 현재 앱의 keyHash: $keyHash');
+          print('🔑 [KEYHASH] ⚠️ 이 값을 카카오 개발자 콘솔에 등록하세요!');
+        } catch (e) {
+          print('🔑 [KEYHASH] keyHash 확인 실패: $e');
+        }
+      }
+      
       bool isInstalled = await isKakaoTalkInstalled();
+      print('🔐 [AUTH] 카카오톡 설치 여부: $isInstalled, Platform: ${Platform.isAndroid ? "Android" : "iOS"}');
       OAuthToken token;
 
       // Android에서는 딥링크 콜백 방식 사용 (app_links와의 충돌 회피)
       if (Platform.isAndroid && !isInstalled) {
+        print('🔐 [AUTH] Android 카카오계정 로그인 시도 (딥링크 방식)');
         token = await _loginWithKakaoAccountAndroid();
+        print('🔐 [AUTH] Android 토큰 발급 성공: ${token.accessToken.substring(0, 20)}...');
       } else if (isInstalled) {
         try {
+          print('🔐 [AUTH] 카카오톡 로그인 시도');
           token = await UserApi.instance.loginWithKakaoTalk();
+          print('🔐 [AUTH] 카카오톡 토큰 발급 성공');
         } catch (error) {
+          print('🔐 [AUTH] 카카오톡 로그인 실패: $error');
           if (error is PlatformException && error.code == 'CANCELED') {
             _isLoading = false;
             notifyListeners();
@@ -200,6 +228,7 @@ class AuthService extends ChangeNotifier {
           }
           // Android에서 카카오톡 실패 시 딥링크 콜백 방식 사용
           if (Platform.isAndroid) {
+            print('🔐 [AUTH] Android fallback: 딥링크 방식으로 재시도');
             token = await _loginWithKakaoAccountAndroid();
           } else {
             token = await UserApi.instance.loginWithKakaoAccount();
@@ -207,8 +236,10 @@ class AuthService extends ChangeNotifier {
         }
       } else {
         try {
+          print('🔐 [AUTH] 카카오계정 로그인 시도 (iOS)');
           token = await UserApi.instance.loginWithKakaoAccount();
         } catch (error) {
+          print('🔐 [AUTH] 카카오계정 로그인 실패: $error');
            _isLoading = false;
            notifyListeners();
            return false;
@@ -216,26 +247,36 @@ class AuthService extends ChangeNotifier {
       }
 
       // 카카오 사용자 정보 가져오기
+      print('🔐 [AUTH] 카카오 사용자 정보 조회 중...');
       _kakaoUser = await UserApi.instance.me();
+      print('🔐 [AUTH] 카카오 사용자: ${_kakaoUser?.kakaoAccount?.email ?? _kakaoUser?.id}');
       
       // Edge Function 호출해서 Supabase 세션 생성
+      print('🔐 [AUTH] Edge Function 호출 시작...');
       final success = await _exchangeKakaoToken(token.accessToken);
+      print('🔐 [AUTH] Edge Function 결과: $success');
       
       if (success) {
+        print('🔐 [AUTH] ✅ 로그인 성공! isLoggedIn = true 설정');
         _isKakaoLoggedIn = true;
         notifyListeners();
+        print('🔐 [AUTH] notifyListeners() 호출 완료');
         return true;
       } else {
         // Edge Function 실패해도 카카오 로그인은 유지
+        print('🔐 [AUTH] ⚠️ Edge Function 실패했지만 카카오 로그인 유지');
         _isKakaoLoggedIn = true;
         notifyListeners();
+        print('🔐 [AUTH] notifyListeners() 호출 완료 (Edge Function 실패 케이스)');
         return true;
       }
     } catch (error) {
+      print('🔐 [AUTH] ❌ 로그인 예외 발생: $error');
       return false;
     } finally {
       _isLoading = false;
       notifyListeners();
+      print('🔐 [AUTH] loginWithKakao 종료, isLoggedIn: $_isKakaoLoggedIn');
     }
   }
 

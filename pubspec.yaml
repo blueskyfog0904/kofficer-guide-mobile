@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   cupertino_icons: ^1.0.6
   flutter_inappwebview: ^6.1.5
   # kakao_maps_flutter 제거 - WebView 기반 카카오맵 사용
@@ -33,7 +35,7 @@ dependencies:
   snapping_sheet: ^3.1.0
   cached_network_image: ^3.3.1
   flutter_dotenv: ^5.1.0
-  intl: ^0.19.0
+  intl: ^0.20.2
   
   # Location
   geolocator: ^13.0.2

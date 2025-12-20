@@ -36,6 +36,7 @@ class Review {
   final String? content;
   final DateTime createdAt;
   final Restaurant? restaurant;
+  final List<ReviewPhotoSimple> photos;
 
   Review({
     required this.id,
@@ -45,6 +46,7 @@ class Review {
     this.content,
     required this.createdAt,
     this.restaurant,
+    this.photos = const [],
   });
 
   factory Review.fromJson(Map<String, dynamic> json) {
@@ -58,6 +60,30 @@ class Review {
       restaurant: json['restaurant'] != null
           ? Restaurant.fromJson(json['restaurant'])
           : null,
+      photos: (json['review_photos'] as List?)
+          ?.map((e) => ReviewPhotoSimple.fromJson(e))
+          .toList() ?? [],
+    );
+  }
+}
+
+/// 간단한 리뷰 사진 모델 (user_activity용)
+class ReviewPhotoSimple {
+  final String id;
+  final String photoUrl;
+  final int displayOrder;
+
+  ReviewPhotoSimple({
+    required this.id,
+    required this.photoUrl,
+    this.displayOrder = 0,
+  });
+
+  factory ReviewPhotoSimple.fromJson(Map<String, dynamic> json) {
+    return ReviewPhotoSimple(
+      id: json['id']?.toString() ?? '',
+      photoUrl: json['photo_url'] ?? '',
+      displayOrder: json['display_order'] ?? 0,
     );
   }
 }

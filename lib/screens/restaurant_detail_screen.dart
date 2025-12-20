@@ -27,6 +27,9 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
   final UserService _userService = UserService();
   final RestaurantService _restaurantService = RestaurantService();
   
+  // 현재 음식점 정보 (리뷰 작성 후 업데이트됨)
+  late Restaurant _currentRestaurant;
+  
   // 이미지 슬라이더 관련
   final PageController _pageController = PageController();
   int _currentImageIndex = 0;
@@ -62,9 +65,24 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _currentRestaurant = widget.restaurant;
     _checkFavoriteStatus();
     _loadImages();
     _loadReviews();
+  }
+  
+  /// 음식점 정보 다시 로드 (리뷰 작성 후 호출)
+  Future<void> _reloadRestaurantInfo() async {
+    try {
+      final updatedRestaurant = await _restaurantService.getRestaurantById(widget.restaurant.id);
+      if (updatedRestaurant != null && mounted) {
+        setState(() {
+          _currentRestaurant = updatedRestaurant;
+        });
+      }
+    } catch (e) {
+      print('❌ Error reloading restaurant info: $e');
+    }
   }
 
   @override
@@ -89,10 +107,10 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
       final addedUrls = <String>{};
       
       // 1. 대표 사진 (primary_photo_url) 먼저 추가
-      if (widget.restaurant.primaryPhotoUrl != null && 
-          widget.restaurant.primaryPhotoUrl!.isNotEmpty) {
-        images.add(widget.restaurant.primaryPhotoUrl!);
-        addedUrls.add(widget.restaurant.primaryPhotoUrl!);
+      if (_currentRestaurant.primaryPhotoUrl != null && 
+          _currentRestaurant.primaryPhotoUrl!.isNotEmpty) {
+        images.add(_currentRestaurant.primaryPhotoUrl!);
+        addedUrls.add(_currentRestaurant.primaryPhotoUrl!);
       }
       
       // 2. 조회된 사진들 추가 (중복 제거)
@@ -501,7 +519,13 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('리뷰가 삭제되었습니다.')),
         );
-        _loadReviews();
+        // 리뷰 목록, 이미지, 음식점 정보 모두 새로고침
+        await _loadReviews();
+        await _loadImages();
+        await _reloadRestaurantInfo();
+        
+        // 업데이트된 음식점 정보를 부모 화면에 전달 (뒤로가기 시 반영)
+        // 리뷰 삭제 후에는 자동으로 뒤로가기하지 않음
       }
     } catch (e) {
       if (mounted) {
@@ -562,7 +586,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
     // 공유 템플릿 생성
     final shareText = '''[공무원맛집 가이드]
 
-${restaurant.name}
+${restaurant.title ?? restaurant.name}
 
 ${restaurant.address ?? restaurant.roadAddress ?? '주소 정보 없음'}
 
@@ -571,7 +595,7 @@ $shareUrl''';
     try {
       await Share.share(
         shareText,
-        subject: '[공무원맛집 가이드] ${restaurant.name}',
+        subject: '[공무원맛집 가이드] ${restaurant.title ?? restaurant.name}',
       );
     } catch (e) {
       print('❌ Error sharing: $e');
@@ -584,7 +608,7 @@ $shareUrl''';
   }
 
   void _openNaverSearch(BuildContext context) {
-    final query = Uri.encodeComponent(widget.restaurant.name);
+    final query = Uri.encodeComponent(widget.restaurant.title ?? widget.restaurant.name);
     final url = 'https://m.search.naver.com/search.naver?query=$query';
     
     final mainState = MainScreen.globalKey.currentState;
@@ -609,7 +633,7 @@ $shareUrl''';
     }
     
     // 검색어가 없으면 음식점 이름 사용
-    final searchQuery = parts.isNotEmpty ? parts.join(' ') : widget.restaurant.name;
+    final searchQuery = parts.isNotEmpty ? parts.join(' ') : (widget.restaurant.title ?? widget.restaurant.name);
     final query = Uri.encodeComponent(searchQuery);
     final url = 'https://m.search.naver.com/search.naver?where=blog&query=$query';
     
@@ -754,9 +778,13 @@ $shareUrl''';
           _userRating = 0;
           _selectedPhotos.clear();
         });
-        // 리뷰 목록 및 이미지 새로고침
-        _loadReviews();
-        _loadImages();
+        // 리뷰 목록, 이미지, 음식점 정보 새로고침
+        await _loadReviews();
+        await _loadImages();
+        await _reloadRestaurantInfo();
+        
+        // 업데이트된 음식점 정보를 부모 화면에 전달
+        Navigator.pop(context, _currentRestaurant);
       }
     } catch (e) {
       if (mounted) {
@@ -908,17 +936,25 @@ $shareUrl''';
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => FocusScope.of(context).unfocus(),
-      child: Scaffold(
-        backgroundColor: const Color(0xFFF9FAFB),
-        appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
-        ),
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (!didPop) {
+          // 뒤로가기 시 업데이트된 음식점 정보 전달
+          Navigator.of(context).pop(_currentRestaurant);
+        }
+      },
+      child: GestureDetector(
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: Scaffold(
+          backgroundColor: const Color(0xFFF9FAFB),
+          appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => Navigator.pop(context, _currentRestaurant),
+          ),
         title: Text(
-          widget.restaurant.name,
+          widget.restaurant.title ?? widget.restaurant.name,
           style: const TextStyle(fontSize: 16),
           overflow: TextOverflow.ellipsis,
         ),
@@ -957,7 +993,7 @@ $shareUrl''';
                 children: [
                   // 음식점 이름
                   Text(
-                    widget.restaurant.name,
+                    widget.restaurant.title ?? widget.restaurant.name,
                     style: const TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.bold,
@@ -970,7 +1006,7 @@ $shareUrl''';
                   Row(
                     children: [
                       ...List.generate(5, (index) {
-                        final rating = widget.restaurant.avgRating ?? 0;
+                        final rating = _reviewSummary?.averageRating ?? _currentRestaurant.avgRating ?? 0;
                         return Icon(
                           index < rating.floor() 
                               ? Icons.star 
@@ -981,7 +1017,7 @@ $shareUrl''';
                       }),
                       const SizedBox(width: 8),
                       Text(
-                        '${widget.restaurant.avgRating?.toStringAsFixed(1) ?? '0.0'}',
+                        '${(_reviewSummary?.averageRating ?? _currentRestaurant.avgRating)?.toStringAsFixed(1) ?? '0.0'}',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -989,7 +1025,7 @@ $shareUrl''';
                         ),
                       ),
                       Text(
-                        ' (${widget.restaurant.reviewCount ?? 0}개 리뷰)',
+                        ' (${_reviewSummary?.totalReviews ?? _currentRestaurant.reviewCount ?? 0}개 리뷰)',
                         style: const TextStyle(
                           fontSize: 14,
                           color: Color(0xFF6B7280),
@@ -1113,9 +1149,9 @@ $shareUrl''';
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  _buildStatItem('리뷰', '${widget.restaurant.reviewCount ?? 0}', Icons.rate_review),
+                  _buildStatItem('리뷰', '${_reviewSummary?.totalReviews ?? _currentRestaurant.reviewCount ?? 0}', Icons.rate_review),
                   Container(width: 1, height: 40, color: const Color(0xFFE5E7EB)),
-                  _buildStatItem('평점', '${widget.restaurant.avgRating?.toStringAsFixed(1) ?? '0.0'}', Icons.star),
+                  _buildStatItem('평점', '${(_reviewSummary?.averageRating ?? _currentRestaurant.avgRating)?.toStringAsFixed(1) ?? '0.0'}', Icons.star),
                   Container(width: 1, height: 40, color: const Color(0xFFE5E7EB)),
                   _buildStatItem('방문', '${widget.restaurant.visitCount ?? 0}', Icons.people),
                 ],
@@ -1263,6 +1299,7 @@ $shareUrl''';
         ),
       ),
       ),
+    ),
     );
   }
 
@@ -1865,7 +1902,7 @@ $shareUrl''';
               ],
             ),
           ),
-      ],
-    );
+        ],
+      );
   }
 }

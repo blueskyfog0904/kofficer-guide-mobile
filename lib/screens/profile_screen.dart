@@ -15,10 +15,14 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final authService = context.watch<AuthService>();
     
+    print('🔐 [UI] ProfileScreen build: isLoggedIn=${authService.isLoggedIn}, isLoading=${authService.isLoading}');
+    
     if (authService.isLoggedIn) {
+      print('🔐 [UI] → MyInfoScreen 표시');
       return const MyInfoScreen();
     }
     
+    print('🔐 [UI] → _LoginScreen 표시');
     return _LoginScreen(authService: authService);
   }
 }

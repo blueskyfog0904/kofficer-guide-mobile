@@ -200,7 +200,7 @@ class UserService {
     try {
       final response = await _client
           .from('reviews')
-          .select('*, restaurant:restaurants(*)') // restaurant 정보 조인
+          .select('*, restaurant:restaurants(*), review_photos(*)') // restaurant와 사진 정보 조인
           .eq('user_id', userId)
           .order('created_at', ascending: false);
           
@@ -283,20 +283,33 @@ class UserService {
     }
   }
 
-  // 리뷰 삭제 (연관된 restaurant_photos도 비활성화)
+  // 리뷰 삭제 (완전 삭제: Storage, restaurant_photos, primary_photo_url 모두 정리)
   Future<bool> deleteReview(String reviewId) async {
     try {
-      // 1. 연관된 restaurant_photos 비활성화
-      final restaurantService = RestaurantService();
-      await restaurantService.deactivateRestaurantPhotosForReview(reviewId);
-      
-      // 2. 리뷰 삭제
-      await _client
+      // 1. 리뷰 정보 조회 (restaurant_id, user_id 필요)
+      final reviewResponse = await _client
           .from('reviews')
-          .delete()
-          .eq('id', reviewId);
+          .select('restaurant_id, user_id')
+          .eq('id', reviewId)
+          .maybeSingle();
       
-      print('✅ Review $reviewId deleted with associated photos deactivated');
+      if (reviewResponse == null) {
+        print('❌ Review not found: $reviewId');
+        return false;
+      }
+      
+      final restaurantId = reviewResponse['restaurant_id']?.toString() ?? '';
+      final userId = reviewResponse['user_id']?.toString() ?? '';
+      
+      // 2. restaurant_service의 완전 삭제 함수 호출
+      final restaurantService = RestaurantService();
+      await restaurantService.deleteReview(
+        reviewId: reviewId,
+        userId: userId,
+        restaurantId: restaurantId,
+      );
+      
+      print('✅ Review $reviewId deleted completely (Storage, restaurant_photos, primary_photo_url all cleaned)');
       return true;
     } catch (e) {
       print('Error deleting review: $e');

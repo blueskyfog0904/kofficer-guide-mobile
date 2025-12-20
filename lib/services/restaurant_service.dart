@@ -171,11 +171,24 @@ class RestaurantService {
     try {
       final response = await _client
           .from('restaurants')
-          .select('*, images:restaurant_images(*)') // 이미지 조인
+          .select('*, images:restaurant_photos(*)') // 이미지 조인 (테이블명 수정)
           .eq('id', id)
           .single();
       
-      return Restaurant.fromJson(response);
+      final data = response;
+      
+      // 리뷰 통계 조회 및 추가
+      final stats = await _getReviewStatsForRestaurants([id]);
+      if (stats.containsKey(id)) {
+        data['avg_rating'] = stats[id]!['avg_rating'];
+        data['review_count'] = stats[id]!['review_count'];
+      } else {
+        // 통계가 없으면(리뷰가 0개인 경우) 0으로 초기화하여 기존 데이터(stale) 덮어쓰기
+        data['avg_rating'] = 0.0;
+        data['review_count'] = 0;
+      }
+      
+      return Restaurant.fromJson(data);
     } catch (e) {
       print('Error fetching restaurant detail: $e');
       return null;
@@ -264,6 +277,12 @@ class RestaurantService {
           onProgress: onProgress,
         );
         print('✅ ${photoResult.uploadedUrls.length} photos uploaded and linked for review $reviewId');
+      }
+      
+      // 사진 캐시 초기화 (목록 화면 갱신용)
+      if (photos != null && photos.isNotEmpty) {
+        _RestaurantPhotoCache.clear(restaurantId);
+        print('✅ Cleared photo cache for restaurant: $restaurantId');
       }
       
       return SubmitReviewResult(
@@ -387,6 +406,9 @@ class RestaurantService {
           .eq('id', photoId);
       
       print('✅ Review photo deleted: $photoId');
+      
+      // 사진 캐시 초기화
+      _RestaurantPhotoCache.clear(restaurantId);
     } catch (e) {
       print('❌ Error deleting review photo: $e');
       rethrow;
@@ -432,15 +454,19 @@ class RestaurantService {
     required String restaurantId,
   }) async {
     try {
-      // 1. 리뷰 사진 정보 조회 (Storage 삭제용)
+      // 1. 리뷰 사진 정보 조회 (Storage 삭제용 및 restaurant_photos 삭제용)
       final photoResponse = await _client
           .from('review_photos')
-          .select('photo_url, storage_path')
+          .select('id, photo_url, storage_path')
           .eq('review_id', reviewId);
       
       final photoUrls = <String>[];
       final storagePaths = <String>[];
+      final reviewPhotoIds = <String>[];
       for (var photo in (photoResponse as List)) {
+        if (photo['id'] != null) {
+          reviewPhotoIds.add(photo['id'].toString());
+        }
         if (photo['photo_url'] != null) {
           photoUrls.add(photo['photo_url']);
         }
@@ -459,7 +485,7 @@ class RestaurantService {
         }
       }
       
-      // 3. 대표 이미지가 삭제된 사진인지 확인하고 null로 설정
+      // 3. 대표 이미지가 삭제된 사진인지 확인하고 처리
       if (photoUrls.isNotEmpty) {
         try {
           final restaurantResponse = await _client
@@ -471,11 +497,18 @@ class RestaurantService {
           if (restaurantResponse != null) {
             final primaryPhotoUrl = restaurantResponse['primary_photo_url'] as String?;
             if (primaryPhotoUrl != null && photoUrls.contains(primaryPhotoUrl)) {
+              // 대표 이미지가 삭제되는 사진이면 null로 설정하고 다른 사진으로 재설정 시도
               await _client
                   .from('restaurants')
                   .update({'primary_photo_url': null})
                   .eq('id', restaurantId);
               print('✅ Cleared primary_photo_url for restaurant: $restaurantId');
+              
+              // 다른 사진으로 자동 재설정 시도
+              await resetPrimaryPhotoIfNeeded(
+                restaurantId: restaurantId,
+                deletedPhotoUrl: primaryPhotoUrl,
+              );
             }
           }
         } catch (e) {
@@ -483,15 +516,23 @@ class RestaurantService {
         }
       }
       
-      // 4. review_photos 테이블에서 삭제
+      // 4. restaurant_photos에서 연동된 사진 삭제 (review_id 또는 review_photo_id로)
+      if (reviewPhotoIds.isNotEmpty) {
+        // review_photo_id로 삭제
+        await _client
+            .from('restaurant_photos')
+            .delete()
+            .inFilter('review_photo_id', reviewPhotoIds);
+      }
+      // review_id로도 삭제 (이중 안전장치)
       await _client
-          .from('review_photos')
+          .from('restaurant_photos')
           .delete()
           .eq('review_id', reviewId);
       
-      // 5. restaurant_photos에서 연동된 사진 삭제
+      // 5. review_photos 테이블에서 삭제
       await _client
-          .from('restaurant_photos')
+          .from('review_photos')
           .delete()
           .eq('review_id', reviewId);
       
@@ -503,6 +544,9 @@ class RestaurantService {
           .eq('user_id', userId); // 본인 리뷰만 삭제 가능
       
       print('✅ Review deleted with photos: $reviewId');
+      
+      // 사진 캐시 초기화
+      _RestaurantPhotoCache.clear(restaurantId);
     } catch (e) {
       print('❌ Error deleting review: $e');
       rethrow;
@@ -837,35 +881,66 @@ class RestaurantService {
       final restaurantIds = nearbyData.map((row) => row['id'] as String).toList();
       final reviewStats = await _getReviewStatsForRestaurants(restaurantIds);
 
-      // rank_value 기준으로 Dense Rank 계산 (지역 검색과 동일한 로직)
-      // 먼저 rank_value 기준으로 정렬된 복사본 생성
-      final sortedByRank = List<Map<String, dynamic>>.from(nearbyData);
-      sortedByRank.sort((a, b) {
-        final rankA = (a['rank_value'] as num?)?.toInt() ?? 0;
-        final rankB = (b['rank_value'] as num?)?.toInt() ?? 0;
-        return rankB.compareTo(rankA); // 내림차순
-      });
-
-      // Dense Rank 계산
-      int currentRank = 1;
-      int? prevRankValue;
-      final rankMap = <String, int>{}; // id -> region_rank
-      
-      for (final item in sortedByRank) {
-        final rankValue = (item['rank_value'] as num?)?.toInt() ?? 0;
-        
-        if (prevRankValue != null && rankValue != prevRankValue) {
-          currentRank++;
+      // 각 음식점이 속한 지역(sub_add1, sub_add2) 내에서의 순위를 계산
+      // 1. 고유한 지역 목록 추출
+      final regionSet = <String>{};
+      for (final item in nearbyData) {
+        final subAdd1 = item['sub_add1'] as String?;
+        final subAdd2 = item['sub_add2'] as String?;
+        if (subAdd1 != null && subAdd2 != null) {
+          regionSet.add('$subAdd1|$subAdd2');
         }
+      }
+      
+      // 2. 각 지역별로 해당 지역의 모든 음식점을 조회하여 순위 계산
+      final regionRankMap = <String, int>{}; // 음식점ID -> 해당 지역 내 순위
+      
+      for (final regionKey in regionSet) {
+        final parts = regionKey.split('|');
+        if (parts.length < 2) continue;
         
-        prevRankValue = rankValue;
-        rankMap[item['id'].toString()] = currentRank;
+        final subAdd1 = parts[0];
+        final subAdd2 = parts[1];
+        
+        try {
+          // 해당 지역의 모든 음식점을 rank_value 순으로 조회
+          final regionResponse = await _client
+              .from('restaurants')
+              .select('id, rank_value')
+              .eq('is_active', true)
+              .eq('sub_add1', subAdd1)
+              .eq('sub_add2', subAdd2)
+              .order('rank_value', ascending: false);
+          
+          final regionData = regionResponse as List;
+          
+          // Dense Rank 계산
+          int currentRank = 1;
+          int? prevRankValue;
+          
+          for (final row in regionData) {
+            final restaurantId = row['id'] as String;
+            final rankValue = (row['rank_value'] as num?)?.toInt() ?? 0;
+            
+            if (prevRankValue != null && rankValue != prevRankValue) {
+              currentRank++;
+            }
+            
+            prevRankValue = rankValue;
+            regionRankMap[restaurantId] = currentRank;
+          }
+          
+          print('📊 Region $subAdd1 $subAdd2: ${regionData.length} restaurants');
+        } catch (e) {
+          print('⚠️ Error fetching region rank for $subAdd1 $subAdd2: $e');
+        }
       }
 
       // 거리순 정렬된 데이터에 region_rank와 리뷰 통계 추가하여 Restaurant 객체 생성
       final nearbyRestaurants = nearbyData.map((json) {
         final id = json['id'].toString();
-        json['region_rank'] = rankMap[id];
+        // 지역 내 순위 사용 (없으면 null)
+        json['region_rank'] = regionRankMap[id];
         json.remove('_distance'); // 임시 필드 제거
         
         // 리뷰 통계 추가
@@ -1438,6 +1513,11 @@ class _RestaurantPhotoCache {
   static void set(String restaurantId, String? photoUrl) {
     _cache[restaurantId] = photoUrl;
     _cacheTime[restaurantId] = DateTime.now();
+  }
+  
+  static void clear(String restaurantId) {
+    _cache.remove(restaurantId);
+    _cacheTime.remove(restaurantId);
   }
   
   static bool hasKey(String restaurantId) {
