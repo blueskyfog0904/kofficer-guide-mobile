@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../models/user_activity.dart';
 import '../services/auth_service.dart';
 import '../services/user_service.dart';
+import '../services/restaurant_service.dart';
 import 'restaurant_detail_screen.dart';
 
 class FavoritesScreen extends StatefulWidget {
@@ -14,8 +15,12 @@ class FavoritesScreen extends StatefulWidget {
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
   final UserService _userService = UserService();
+  final RestaurantService _restaurantService = RestaurantService();
   List<Favorite> _favorites = [];
   bool _isLoading = true;
+  
+  // 음식점 첫 번째 사진 캐시 (primary_photo_url이 없는 음식점용)
+  final Map<String, String> _restaurantPhotos = {};
 
   @override
   void initState() {
@@ -32,9 +37,34 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           _favorites = data;
           _isLoading = false;
         });
+        
+        // primary_photo_url이 없는 음식점들의 첫 번째 사진 일괄 조회
+        _fetchMissingPhotos(data);
       }
     } else {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  /// primary_photo_url이 없는 음식점들의 첫 번째 사진을 일괄 조회
+  Future<void> _fetchMissingPhotos(List<Favorite> favorites) async {
+    final idsWithoutPhoto = favorites
+        .where((f) => f.restaurant != null && 
+            (f.restaurant!.primaryPhotoUrl == null || f.restaurant!.primaryPhotoUrl!.isEmpty))
+        .map((f) => f.restaurant!.id)
+        .toList();
+    
+    if (idsWithoutPhoto.isEmpty) return;
+    
+    try {
+      final photos = await _restaurantService.getFirstPhotosForRestaurants(idsWithoutPhoto);
+      if (mounted && photos.isNotEmpty) {
+        setState(() {
+          _restaurantPhotos.addAll(photos);
+        });
+      }
+    } catch (e) {
+      print('Error fetching missing photos: $e');
     }
   }
 
@@ -135,9 +165,15 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                           child: ListTile(
                             leading: ClipRRect(
                               borderRadius: BorderRadius.circular(8),
-                              child: restaurant.primaryPhotoUrl != null
-                                  ? Image.network(
-                                      restaurant.primaryPhotoUrl!,
+                              child: Builder(
+                                builder: (context) {
+                                  final photoUrl = restaurant.primaryPhotoUrl?.isNotEmpty == true
+                                      ? restaurant.primaryPhotoUrl!
+                                      : _restaurantPhotos[restaurant.id];
+                                  
+                                  if (photoUrl != null && photoUrl.isNotEmpty) {
+                                    return Image.network(
+                                      photoUrl,
                                       width: 60,
                                       height: 60,
                                       fit: BoxFit.cover,
@@ -147,13 +183,17 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                                         color: Colors.grey[200],
                                         child: const Icon(Icons.restaurant, size: 30),
                                       ),
-                                    )
-                                  : Container(
+                                    );
+                                  } else {
+                                    return Container(
                                       width: 60,
                                       height: 60,
                                       color: Colors.grey[200],
                                       child: const Icon(Icons.restaurant, size: 30),
-                                    ),
+                                    );
+                                  }
+                                },
+                              ),
                             ),
                             title: Text(
                               restaurant.name,

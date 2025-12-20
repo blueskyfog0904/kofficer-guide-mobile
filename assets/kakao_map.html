@@ -131,6 +131,48 @@
                 opacity: 0;
             }
         }
+        /* 클러스터 마커 스타일 */
+        .cluster-marker {
+            background-color: white;
+            border: 2px solid #3B82F6;
+            border-radius: 20px;
+            padding: 8px 14px;
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .cluster-marker:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+        .cluster-icon {
+            width: 20px;
+            height: 20px;
+            background-color: #3B82F6;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .cluster-icon svg {
+            width: 12px;
+            height: 12px;
+            fill: white;
+        }
+        .cluster-text {
+            font-size: 13px;
+            font-weight: 600;
+            color: #1F2937;
+        }
+        .cluster-count {
+            font-size: 13px;
+            font-weight: bold;
+            color: #3B82F6;
+        }
     </style>
 </head>
 <body>
@@ -149,14 +191,21 @@
         var map = null;
         var markers = [];
         var overlays = [];
+        var clusterOverlays = []; // 클러스터 오버레이
         var selectedOverlay = null;
         var selectedMarker = null; // 선택된 마커
+        var selectedRestaurantId = null; // 선택된 음식점 ID
         var kakaoSdkReady = false;
         var pendingInit = null; // 대기 중인 초기화 요청
         var myLocationMarker = null; // 내 위치 마커
         var myLocationOverlay = null; // 내 위치 오버레이
         var lastClickTime = 0; // 더블클릭 감지용
         var lastClickId = null; // 마지막 클릭한 마커 ID
+        var currentZoomLevel = 5; // 현재 줌 레벨
+        var restaurantDataCache = []; // 음식점 데이터 캐시
+        var clusteringEnabled = true; // 클러스터링 활성화
+        var debounceTimer = null; // 디바운스 타이머
+        var initialRenderDone = true; // 초기 렌더링 완료 플래그
         
         // HTML 이스케이프 함수 (XSS 방지)
         function escapeHtml(unsafe) {
@@ -168,6 +217,334 @@
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
         }
+        
+        // ==================== 클러스터링 알고리즘 ====================
+        
+        // 줌 레벨에 따른 클러스터링 거리 계산
+        function calculateClusterDistance(zoomLevel) {
+            // 기본 거리 (픽셀)
+            var baseDistance = 80;
+            // 줌 레벨에 따른 배율 계산 (레벨이 높을수록 = 확대, 클러스터 거리 감소)
+            // 카카오맵 줌 레벨: 1(가장 확대) ~ 14(가장 축소)
+            var levelMultiplier = Math.pow(1.3, zoomLevel - 3);
+            return baseDistance * levelMultiplier;
+        }
+        
+        // 두 좌표 간의 화면상 픽셀 거리 계산
+        function getDistanceInPixels(pos1, pos2) {
+            if (!map) return Infinity;
+            
+            try {
+                var proj = map.getProjection();
+                if (!proj) return Infinity;
+                
+                var point1 = proj.pointFromCoords(pos1);
+                var point2 = proj.pointFromCoords(pos2);
+                
+                if (!point1 || !point2) return Infinity;
+                
+                var dx = point1.x - point2.x;
+                var dy = point1.y - point2.y;
+                
+                return Math.sqrt(dx * dx + dy * dy);
+            } catch (e) {
+                console.error('getDistanceInPixels error:', e);
+                return Infinity;
+            }
+        }
+        
+        // 클러스터 그룹 생성
+        function createClusterGroups(positions, clusterDistance) {
+            var groups = [];
+            var assigned = new Set();
+            
+            for (var i = 0; i < positions.length; i++) {
+                if (assigned.has(i)) continue;
+                
+                // 새 그룹 시작
+                var groupMarkers = [positions[i]];
+                assigned.add(i);
+                
+                // 클러스터 거리 내의 다른 마커들 찾기
+                for (var j = i + 1; j < positions.length; j++) {
+                    if (assigned.has(j)) continue;
+                    
+                    var dist = getDistanceInPixels(positions[i].position, positions[j].position);
+                    
+                    if (dist < clusterDistance) {
+                        groupMarkers.push(positions[j]);
+                        assigned.add(j);
+                    }
+                }
+                
+                // 그룹 중심점 계산
+                var center;
+                if (groupMarkers.length > 1) {
+                    var sumLat = 0, sumLng = 0;
+                    for (var k = 0; k < groupMarkers.length; k++) {
+                        sumLat += groupMarkers[k].position.getLat();
+                        sumLng += groupMarkers[k].position.getLng();
+                    }
+                    center = new kakao.maps.LatLng(
+                        sumLat / groupMarkers.length,
+                        sumLng / groupMarkers.length
+                    );
+                } else {
+                    center = groupMarkers[0].position;
+                }
+                
+                groups.push({
+                    markers: groupMarkers,
+                    center: center
+                });
+            }
+            
+            return groups;
+        }
+        
+        // 개별 마커 렌더링
+        function renderSingleMarker(data, isFocused) {
+            console.log('📍 renderSingleMarker:', data.name, ', focused:', isFocused);
+            var position = new kakao.maps.LatLng(data.lat, data.lng);
+            
+            // 마커 생성
+            var marker = new kakao.maps.Marker({
+                position: position,
+                map: map,
+                zIndex: isFocused ? 1000 : 1
+            });
+            markers.push(marker);
+            marker.restaurantId = data.id;
+            
+            // 커스텀 오버레이 생성
+            var content = document.createElement('div');
+            content.className = 'marker-card' + (isFocused ? ' selected' : '');
+            content.setAttribute('data-id', data.id);
+            content.innerHTML = 
+                '<div class="rank-badge">' + escapeHtml(data.rank) + '</div>' +
+                '<div class="restaurant-name">' + escapeHtml(data.name) + '</div>' +
+                (data.distance ? '<div class="restaurant-distance">' + escapeHtml(data.distance) + '</div>' : '');
+            
+            // 클릭 이벤트
+            content.onclick = function() {
+                var isDoubleClick = false;
+                
+                // 이미 선택된 마커를 다시 클릭하면 상세페이지로 이동
+                if (selectedRestaurantId === data.id) {
+                    isDoubleClick = true;
+                } else {
+                    // 새로운 마커 선택
+                    // 마커 클릭 시 자동으로 선택 효과 적용
+                    selectMarkerDirect(data.id, content, customOverlay, marker);
+                }
+                
+                if (window.flutter_inappwebview) {
+                    window.flutter_inappwebview.callHandler('onMarkerClick', data.id, data.name, isDoubleClick);
+                }
+            };
+            
+            var customOverlay = new kakao.maps.CustomOverlay({
+                position: position,
+                content: content,
+                yAnchor: 2.2,
+                zIndex: isFocused ? 1000 : 1
+            });
+            customOverlay.setMap(map);
+            customOverlay.restaurantId = data.id;
+            overlays.push(customOverlay);
+            
+            if (isFocused) {
+                selectedOverlay = customOverlay;
+                selectedMarker = marker;
+            }
+        }
+        
+        // 클러스터 마커 렌더링
+        function renderCluster(group) {
+            var content = document.createElement('div');
+            content.className = 'cluster-marker';
+            content.innerHTML = 
+                '<div class="cluster-icon">' +
+                    '<svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>' +
+                '</div>' +
+                '<span class="cluster-text">맛집</span>' +
+                '<span class="cluster-count">' + group.markers.length + '개</span>';
+            
+            // 클러스터 클릭 시 줌인
+            content.onclick = function() {
+                var newLevel = Math.max(1, currentZoomLevel - 2);
+                map.setLevel(newLevel);
+                map.setCenter(group.center);
+                
+                // Flutter에 클러스터 클릭 알림
+                if (window.flutter_inappwebview) {
+                    window.flutter_inappwebview.callHandler('onClusterClick', group.markers.length, group.center.getLat(), group.center.getLng());
+                }
+            };
+            
+            var clusterOverlay = new kakao.maps.CustomOverlay({
+                position: group.center,
+                content: content,
+                yAnchor: 0.5,
+                zIndex: 100
+            });
+            clusterOverlay.setMap(map);
+            clusterOverlays.push(clusterOverlay);
+        }
+        
+        // 클러스터링 적용 렌더링
+        function renderMarkersWithClustering() {
+            console.log('🔍 renderMarkersWithClustering called - map:', !!map, ', clusteringEnabled:', clusteringEnabled, ', cacheLength:', restaurantDataCache.length);
+            
+            if (!map || restaurantDataCache.length === 0) {
+                console.log('⚠️ renderMarkersWithClustering skipped - no map or no data');
+                return;
+            }
+            
+            try {
+                // 기존 마커/오버레이 제거 (내 위치 마커 제외)
+                clearMarkersOnly();
+                
+                // 클러스터링 비활성화 또는 줌 레벨이 낮으면 모든 마커 개별 표시
+                // 카카오맵 줌 레벨: 1(가장 확대) ~ 14(가장 축소)
+                // 줌 레벨 4 이상(더 축소)에서 클러스터링 적용
+                if (!clusteringEnabled || currentZoomLevel <= 3) {
+                    for (var i = 0; i < restaurantDataCache.length; i++) {
+                        var data = restaurantDataCache[i];
+                        var isFocused = selectedRestaurantId && data.id === selectedRestaurantId;
+                        renderSingleMarker(data, isFocused);
+                    }
+                    console.log('✅ Rendered', restaurantDataCache.length, 'individual markers (zoom:', currentZoomLevel, ')');
+                    return;
+                }
+                
+                // 선택된 마커는 클러스터링에서 제외
+                var focusedData = null;
+                var otherData = [];
+                
+                for (var i = 0; i < restaurantDataCache.length; i++) {
+                    var data = restaurantDataCache[i];
+                    if (selectedRestaurantId && data.id === selectedRestaurantId) {
+                        focusedData = data;
+                    } else {
+                        otherData.push({
+                            data: data,
+                            position: new kakao.maps.LatLng(data.lat, data.lng)
+                        });
+                    }
+                }
+                
+                // 선택된 마커는 항상 개별 표시
+                if (focusedData) {
+                    renderSingleMarker(focusedData, true);
+                }
+                
+                // 줌 레벨 5+: 클러스터링 적용
+                var clusterDistance = calculateClusterDistance(currentZoomLevel);
+                var groups = createClusterGroups(otherData, clusterDistance);
+                
+                var clusterCount = 0;
+                var singleCount = 0;
+                
+                for (var g = 0; g < groups.length; g++) {
+                    var group = groups[g];
+                    if (group.markers.length === 1) {
+                        // 단일 마커
+                        renderSingleMarker(group.markers[0].data, false);
+                        singleCount++;
+                    } else {
+                        // 클러스터
+                        renderCluster(group);
+                        clusterCount++;
+                    }
+                }
+                
+                console.log('✅ Clustering applied:', clusterCount, 'clusters,', singleCount, 'single markers (zoom:', currentZoomLevel, ', distance:', clusterDistance.toFixed(0), 'px)');
+                
+            } catch (error) {
+                console.error('❌ renderMarkersWithClustering error:', error);
+                // 에러 발생 시 기본 마커 표시 (fallback)
+                try {
+                    clearMarkersOnly();
+                    for (var f = 0; f < restaurantDataCache.length; f++) {
+                        renderSingleMarker(restaurantDataCache[f], false);
+                    }
+                    console.log('✅ Fallback: Rendered', restaurantDataCache.length, 'markers without clustering');
+                } catch (fallbackError) {
+                    console.error('❌ Fallback rendering also failed:', fallbackError);
+                }
+            }
+        }
+        
+        // 마커만 제거 (내 위치 마커 제외)
+        function clearMarkersOnly() {
+            markers.forEach(function(marker) {
+                marker.setMap(null);
+            });
+            markers = [];
+            
+            overlays.forEach(function(overlay) {
+                overlay.setMap(null);
+            });
+            overlays = [];
+            
+            clusterOverlays.forEach(function(overlay) {
+                overlay.setMap(null);
+            });
+            clusterOverlays = [];
+            
+            selectedOverlay = null;
+            selectedMarker = null;
+        }
+        
+        // 디바운스 적용 클러스터링 업데이트
+        function updateClusteringDebounced() {
+            if (debounceTimer) {
+                clearTimeout(debounceTimer);
+            }
+            debounceTimer = setTimeout(function() {
+                renderMarkersWithClustering();
+            }, 150);
+        }
+        
+        // 마커 선택 효과 직접 적용 (클러스터링 재렌더링 없이)
+        function selectMarkerDirect(restaurantId, contentElement, overlay, marker) {
+            // 이전 선택 해제 (DOM에서 직접)
+            var prevSelected = document.querySelectorAll('.marker-card.selected');
+            prevSelected.forEach(function(el) {
+                el.classList.remove('selected');
+            });
+            
+            // 이전 오버레이/마커 z-index 복원
+            if (selectedOverlay && selectedOverlay !== overlay) {
+                selectedOverlay.setZIndex(1);
+            }
+            if (selectedMarker && selectedMarker !== marker) {
+                selectedMarker.setZIndex(1);
+            }
+            
+            // 새로운 선택 적용
+            if (contentElement) {
+                contentElement.classList.add('selected');
+            }
+            
+            // 선택 상태 저장
+            selectedRestaurantId = restaurantId;
+            selectedOverlay = overlay;
+            selectedMarker = marker;
+            
+            // z-index 높이기
+            if (overlay) {
+                overlay.setZIndex(1000);
+            }
+            if (marker) {
+                marker.setZIndex(1000);
+            }
+            
+            console.log('✅ Marker selected (direct):', restaurantId);
+        }
+        
+        // ==================== 클러스터링 알고리즘 끝 ====================
         
         // SDK 로딩 대기 함수
         function waitForKakaoSdk(callback, maxAttempts, attempt) {
@@ -227,6 +604,22 @@
                     var restaurantData = JSON.parse(markersJson);
                     console.log('✅ Parsed', restaurantData.length, 'markers');
                     
+                    // 데이터 캐시 저장 (클러스터링용)
+                    restaurantDataCache = [];
+                    restaurantData.forEach(function(restaurant, index) {
+                        if (restaurant.lat && restaurant.lng) {
+                            restaurantDataCache.push({
+                                id: restaurant.id,
+                                name: restaurant.name,
+                                lat: restaurant.lat,
+                                lng: restaurant.lng,
+                                rank: restaurant.rank || (index + 1),
+                                distance: restaurant.distance || ''
+                            });
+                        }
+                    });
+                    console.log('✅ restaurantDataCache populated with', restaurantDataCache.length, 'items');
+                    
                     var container = document.getElementById('map');
                     var options = {
                         center: new kakao.maps.LatLng(centerLat, centerLng),
@@ -234,6 +627,7 @@
                     };
                     
                     map = new kakao.maps.Map(container, options);
+                    currentZoomLevel = 5;
                     console.log('✅ Map created with center:', centerLat, centerLng);
                     
                     // 지도 중심이 제대로 설정되었는지 확인
@@ -248,88 +642,33 @@
                         createMyLocationMarker(centerLat, centerLng);
                     }
                     
-                    var bounds = new kakao.maps.LatLngBounds();
-                    var hasValidMarkers = false;
-                    
-                    // 내 위치도 bounds에 포함
-                    if (showMyLocation) {
-                        bounds.extend(new kakao.maps.LatLng(centerLat, centerLng));
-                    }
-                    
-                    restaurantData.forEach(function(restaurant, index) {
-                        if (!restaurant.lat || !restaurant.lng) {
-                            console.warn('⚠️ Skipping restaurant without coordinates:', restaurant.name);
-                            return;
+                    // 줌 레벨 변경 리스너
+                    kakao.maps.event.addListener(map, 'zoom_changed', function() {
+                        var newZoomLevel = map.getLevel();
+                        if (newZoomLevel !== currentZoomLevel) {
+                            currentZoomLevel = newZoomLevel;
+                            console.log('🔍 Zoom level changed to:', currentZoomLevel);
+                            // 초기 렌더링 완료 후, 클러스터링이 활성화된 경우에만 업데이트
+                            if (initialRenderDone && clusteringEnabled) {
+                                updateClusteringDebounced();
+                            }
                         }
-                        
-                        hasValidMarkers = true;
-                        var position = new kakao.maps.LatLng(restaurant.lat, restaurant.lng);
-                        
-                        // 마커 생성
-                        var marker = new kakao.maps.Marker({
-                            position: position,
-                            map: map
-                        });
-                        markers.push(marker);
-                        
-                        // 커스텀 오버레이 생성 (순위 + 이름 + 거리)
-                        var rank = restaurant.rank || (index + 1);
-                        var distance = restaurant.distance || '';
-                        var content = document.createElement('div');
-                        content.className = 'marker-card';
-                        content.setAttribute('data-id', restaurant.id);
-                        content.innerHTML = 
-                            '<div class="rank-badge">' + escapeHtml(rank) + '</div>' +
-                            '<div class="restaurant-name">' + escapeHtml(restaurant.name) + '</div>' +
-                            (distance ? '<div class="restaurant-distance">' + escapeHtml(distance) + '</div>' : '');
-                        
-                        // 클릭 이벤트 (더블클릭 감지)
-                        content.onclick = function() {
-                            var currentTime = new Date().getTime();
-                            var isDoubleClick = false;
-                            
-                            // 더블클릭 감지 (500ms 이내 같은 마커 클릭)
-                            if (lastClickId === restaurant.id && (currentTime - lastClickTime) < 500) {
-                                isDoubleClick = true;
-                                lastClickTime = 0;
-                                lastClickId = null;
-                            } else {
-                                lastClickTime = currentTime;
-                                lastClickId = restaurant.id;
-                            }
-                            
-                            // Flutter에 클릭 이벤트 전달
-                            if (window.flutter_inappwebview) {
-                                window.flutter_inappwebview.callHandler('onMarkerClick', restaurant.id, restaurant.name, isDoubleClick);
-                            }
-                        };
-                        
-                        var customOverlay = new kakao.maps.CustomOverlay({
-                            position: position,
-                            content: content,
-                            yAnchor: 2.2,
-                            zIndex: 1 // 기본 z-index
-                        });
-                        customOverlay.setMap(map);
-                        customOverlay.restaurantId = restaurant.id;
-                        overlays.push(customOverlay);
-                        
-                        // 마커도 저장 (z-index 조정용)
-                        marker.restaurantId = restaurant.id;
-                        
-                        bounds.extend(position);
                     });
                     
-                    // 지도 범위 조정 - 마커 추가 완료 후 내 위치 중심으로 설정
-                    // 마커 렌더링이 완료된 후 중심 설정을 위해 setTimeout 사용
+                    // 지도 중심 설정 후 클러스터링 적용하여 마커 렌더링
                     setTimeout(function() {
                         map.setCenter(new kakao.maps.LatLng(centerLat, centerLng));
                         map.setLevel(5);
-                        console.log('✅ Map center set to my location after markers loaded:', centerLat, centerLng);
+                        currentZoomLevel = 5;
+                        
+                        // 클러스터링 적용하여 마커 렌더링
+                        renderMarkersWithClustering();
+                        
+                        console.log('✅ Map initialized with', restaurantData.length, 'markers');
                     }, 100);
                     
                     document.getElementById('loading').style.display = 'none';
-                    console.log('✅ Map initialized with', restaurantData.length, 'markers');
+                    console.log('✅ Map initialized with', restaurantData.length, 'markers (clustering enabled)');
                     if (resolve) resolve('success');
                     
                 } catch (innerError) {
@@ -415,44 +754,26 @@
             if (!map) return 'error: map not initialized';
             
             try {
-                // 이전 선택 해제
-                if (selectedOverlay) {
-                    var prevContent = selectedOverlay.getContent();
-                    if (prevContent) {
-                        prevContent.classList.remove('selected');
-                    }
-                    // 이전 마커 z-index 복원
-                    selectedOverlay.setZIndex(1);
-                }
-                if (selectedMarker) {
-                    selectedMarker.setZIndex(1);
-                }
+                // 선택된 음식점 ID 저장
+                selectedRestaurantId = restaurantId;
                 
-                // 새로운 선택
-                for (var i = 0; i < overlays.length; i++) {
-                    if (overlays[i].restaurantId === restaurantId) {
-                        var content = overlays[i].getContent();
-                        if (content) {
-                            content.classList.add('selected');
-                        }
-                        selectedOverlay = overlays[i];
-                        // 선택된 오버레이의 z-index를 높임
-                        selectedOverlay.setZIndex(1000);
-                        
-                        // 해당 마커 찾기
-                        for (var j = 0; j < markers.length; j++) {
-                            if (markers[j].restaurantId === restaurantId) {
-                                selectedMarker = markers[j];
-                                selectedMarker.setZIndex(1000);
-                                break;
-                            }
-                        }
-                        
-                        // 해당 위치로 이동
-                        map.setCenter(overlays[i].getPosition());
-                        map.setLevel(3);
+                // 해당 음식점의 좌표 찾기
+                var targetData = null;
+                for (var i = 0; i < restaurantDataCache.length; i++) {
+                    if (restaurantDataCache[i].id === restaurantId) {
+                        targetData = restaurantDataCache[i];
                         break;
                     }
+                }
+                
+                if (targetData) {
+                    // 클러스터링 다시 렌더링 (선택된 마커는 개별 표시됨)
+                    renderMarkersWithClustering();
+                    
+                    // 해당 위치로 이동
+                    var targetPosition = new kakao.maps.LatLng(targetData.lat, targetData.lng);
+                    map.setCenter(targetPosition);
+                    map.setLevel(3);
                 }
                 
                 console.log('✅ Marker selected:', restaurantId);
@@ -461,6 +782,14 @@
                 console.error('❌ selectMarker error:', error);
                 return 'error: ' + error.message;
             }
+        };
+        
+        // Flutter에서 호출할 함수: 마커 선택 해제
+        window.clearMarkerSelection = function() {
+            selectedRestaurantId = null;
+            renderMarkersWithClustering();
+            console.log('✅ Marker selection cleared');
+            return 'success';
         };
         
         // Flutter에서 호출할 함수: 줌인
@@ -479,7 +808,7 @@
             return 'success';
         };
         
-        // 마커 제거 함수
+        // 마커 제거 함수 (내 위치 마커 포함)
         function clearMarkers() {
             markers.forEach(function(marker) {
                 marker.setMap(null);
@@ -490,7 +819,16 @@
                 overlay.setMap(null);
             });
             overlays = [];
+            
+            clusterOverlays.forEach(function(overlay) {
+                overlay.setMap(null);
+            });
+            clusterOverlays = [];
+            
             selectedOverlay = null;
+            selectedMarker = null;
+            selectedRestaurantId = null;
+            // restaurantDataCache는 유지 (클러스터링에 필요)
             
             // 내 위치 마커도 제거
             if (myLocationOverlay) {
@@ -498,6 +836,20 @@
                 myLocationOverlay = null;
             }
         }
+        
+        // Flutter에서 호출할 함수: 클러스터링 활성화/비활성화
+        window.setClusteringEnabled = function(enabled) {
+            clusteringEnabled = enabled;
+            renderMarkersWithClustering();
+            console.log('✅ Clustering', enabled ? 'enabled' : 'disabled');
+            return 'success';
+        };
+        
+        // Flutter에서 호출할 함수: 현재 줌 레벨 가져오기
+        window.getZoomLevel = function() {
+            if (!map) return -1;
+            return map.getLevel();
+        };
         
         // 페이지 로드 완료 알림
         console.log('✅ Kakao Map HTML ready');

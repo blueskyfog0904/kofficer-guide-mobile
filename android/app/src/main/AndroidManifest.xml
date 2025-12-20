@@ -12,7 +12,7 @@
     <!-- 카카오 로그인 (네이티브 앱 키 설정 필요 시 메타데이터 추가) -->
     
    <application
-        android:label="Kofficer Guide"
+        android:label="공무원맛집가이드"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">

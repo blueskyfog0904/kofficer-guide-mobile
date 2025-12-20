@@ -32,6 +32,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
   int _currentImageIndex = 0;
   List<String> _imageUrls = [];
   bool _isLoadingImages = true;
+  final Set<String> _failedImageUrls = {}; // 로딩 실패한 이미지 URL 추적
   
   // 리뷰 작성 관련
   final TextEditingController _reviewController = TextEditingController();
@@ -43,11 +44,20 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
   ReviewSummary? _reviewSummary;
   bool _isLoadingReviews = true;
   
+  // 내 리뷰 관련
+  bool _hasUserReview = false;
+  String? _userReviewId;
+  
   // 리뷰 사진 업로드 관련
   final ImagePicker _imagePicker = ImagePicker();
   List<File> _selectedPhotos = [];
   bool _isUploadingPhotos = false;
   static const int _maxPhotos = 6;
+  
+  // 업로드 진행률 관련
+  double _uploadProgress = 0.0;
+  int _currentUploadIndex = 0;
+  int _totalUploadCount = 0;
 
   @override
   void initState() {
@@ -68,21 +78,28 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
     setState(() => _isLoadingImages = true);
     
     try {
-      // restaurant_photos 테이블에서 photo_url 가져오기
-      final photos = await _restaurantService.getRestaurantPhotos(widget.restaurant.id);
+      // 새로운 통합 조회 함수 사용: restaurant_photos + 레거시 review_photos
+      final photos = await _restaurantService.getRestaurantPhotosWithInfo(
+        widget.restaurant.id,
+        includeReviewPhotos: true,
+        maxPhotos: 20,
+      );
       
       final images = <String>[];
+      final addedUrls = <String>{};
       
       // 1. 대표 사진 (primary_photo_url) 먼저 추가
       if (widget.restaurant.primaryPhotoUrl != null && 
           widget.restaurant.primaryPhotoUrl!.isNotEmpty) {
         images.add(widget.restaurant.primaryPhotoUrl!);
+        addedUrls.add(widget.restaurant.primaryPhotoUrl!);
       }
       
-      // 2. restaurant_photos 테이블의 사진들 추가 (중복 제거)
-      for (var photoUrl in photos) {
-        if (!images.contains(photoUrl)) {
-          images.add(photoUrl);
+      // 2. 조회된 사진들 추가 (중복 제거)
+      for (var photo in photos) {
+        if (!addedUrls.contains(photo.photoUrl)) {
+          images.add(photo.photoUrl);
+          addedUrls.add(photo.photoUrl);
         }
       }
       
@@ -118,10 +135,27 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
       final reviews = await _restaurantService.getRestaurantReviews(widget.restaurant.id);
       final summary = await _restaurantService.getRestaurantReviewSummary(widget.restaurant.id);
       
+      // 현재 유저의 리뷰가 있는지 확인
+      final currentUser = context.read<AuthService>().currentUser;
+      bool hasUserReview = false;
+      String? userReviewId;
+      
+      if (currentUser != null) {
+        for (var review in reviews) {
+          if (review.userId == currentUser.id) {
+            hasUserReview = true;
+            userReviewId = review.id;
+            break;
+          }
+        }
+      }
+      
       if (mounted) {
         setState(() {
           _reviews = reviews;
           _reviewSummary = summary;
+          _hasUserReview = hasUserReview;
+          _userReviewId = userReviewId;
           _isLoadingReviews = false;
         });
       }
@@ -129,6 +163,351 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
       print('❌ Error loading reviews: $e');
       if (mounted) {
         setState(() => _isLoadingReviews = false);
+      }
+    }
+  }
+  
+  /// 내 리뷰인지 확인
+  bool _isMyReview(UserReview review) {
+    final currentUser = context.read<AuthService>().currentUser;
+    return currentUser != null && review.userId == currentUser.id;
+  }
+  
+  /// 리뷰 수정 다이얼로그
+  void _showEditReviewDialog(UserReview review) {
+    final editController = TextEditingController(text: review.content ?? '');
+    double editRating = review.rating.toDouble();
+    List<ReviewPhoto> existingPhotos = List.from(review.photos);
+    List<File> newPhotos = [];
+    List<String> photosToDelete = []; // 삭제할 사진 ID 목록
+    bool isUpdating = false;
+    
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('리뷰 수정'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 평점
+                  const Text('평점', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: List.generate(5, (index) {
+                      return GestureDetector(
+                        onTap: () => setDialogState(() => editRating = index + 1.0),
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 4),
+                          child: Icon(
+                            index < editRating ? Icons.star : Icons.star_border,
+                            color: Colors.amber,
+                            size: 32,
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // 내용
+                  const Text('내용', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: editController,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: '리뷰 내용을 입력해주세요...',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // 기존 사진
+                  const Text('사진', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  if (existingPhotos.isNotEmpty || newPhotos.isNotEmpty)
+                    SizedBox(
+                      height: 80,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          // 기존 사진
+                          ...existingPhotos.where((p) => !photosToDelete.contains(p.id)).map((photo) {
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.network(
+                                      photo.photoUrl,
+                                      width: 80,
+                                      height: 80,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(
+                                        width: 80,
+                                        height: 80,
+                                        color: Colors.grey[200],
+                                        child: const Icon(Icons.image_not_supported),
+                                      ),
+                                    ),
+                                  ),
+                                  Positioned(
+                                    top: 4,
+                                    right: 4,
+                                    child: GestureDetector(
+                                      onTap: () {
+                                        setDialogState(() {
+                                          photosToDelete.add(photo.id);
+                                        });
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.all(2),
+                                        decoration: const BoxDecoration(
+                                          color: Colors.red,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(Icons.close, size: 16, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
+                          // 새 사진
+                          ...newPhotos.asMap().entries.map((entry) {
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.file(
+                                      entry.value,
+                                      width: 80,
+                                      height: 80,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                                  Positioned(
+                                    top: 4,
+                                    right: 4,
+                                    child: GestureDetector(
+                                      onTap: () {
+                                        setDialogState(() {
+                                          newPhotos.removeAt(entry.key);
+                                        });
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.all(2),
+                                        decoration: const BoxDecoration(
+                                          color: Colors.red,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(Icons.close, size: 16, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  
+                  // 사진 추가 버튼
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      final pickedFiles = await _imagePicker.pickMultiImage(
+                        maxWidth: 1920,
+                        maxHeight: 1920,
+                      );
+                      if (pickedFiles.isNotEmpty) {
+                        final remainingSlots = _maxPhotos - (existingPhotos.length - photosToDelete.length + newPhotos.length);
+                        final filesToAdd = pickedFiles.take(remainingSlots).map((f) => File(f.path)).toList();
+                        setDialogState(() {
+                          newPhotos.addAll(filesToAdd);
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.add_photo_alternate, size: 18),
+                    label: Text('사진 추가 (${existingPhotos.length - photosToDelete.length + newPhotos.length}/$_maxPhotos)'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: isUpdating ? null : () => Navigator.pop(context),
+              child: const Text('취소'),
+            ),
+            ElevatedButton(
+              onPressed: isUpdating ? null : () async {
+                setDialogState(() => isUpdating = true);
+                Navigator.pop(context);
+                await _updateReviewWithPhotos(
+                  review.id,
+                  editRating.toInt(),
+                  editController.text,
+                  photosToDelete,
+                  newPhotos,
+                );
+              },
+              child: isUpdating
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('수정'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  /// 리뷰 삭제 확인 다이얼로그
+  void _showDeleteReviewConfirmDialog(UserReview review) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('리뷰 삭제'),
+        content: const Text('정말 이 리뷰를 삭제하시겠습니까?\n삭제된 리뷰는 복구할 수 없습니다.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _deleteReview(review.id);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+            ),
+            child: const Text('삭제', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  /// 리뷰 수정 실행 (사진 포함)
+  Future<void> _updateReviewWithPhotos(
+    String reviewId,
+    int rating,
+    String content,
+    List<String> photosToDelete,
+    List<File> newPhotos,
+  ) async {
+    final user = context.read<AuthService>().currentUser;
+    if (user == null) return;
+    
+    try {
+      // 1. 리뷰 내용 수정
+      await _restaurantService.updateReview(
+        reviewId: reviewId,
+        userId: user.id,
+        rating: rating,
+        content: content,
+      );
+      
+      // 2. 삭제할 사진 처리
+      for (var photoId in photosToDelete) {
+        try {
+          await _restaurantService.deleteReviewPhoto(
+            photoId: photoId,
+            restaurantId: widget.restaurant.id,
+          );
+        } catch (e) {
+          print('⚠️ Failed to delete photo $photoId: $e');
+        }
+      }
+      
+      // 3. 새 사진 추가
+      if (newPhotos.isNotEmpty) {
+        await _restaurantService.uploadAndLinkReviewPhotos(
+          restaurantId: widget.restaurant.id,
+          userId: user.id,
+          reviewId: reviewId,
+          photos: newPhotos,
+        );
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('리뷰가 수정되었습니다.')),
+        );
+        _loadReviews();
+        _loadImages();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('리뷰 수정 실패: $e')),
+        );
+      }
+    }
+  }
+  
+  /// 리뷰 수정 실행 (레거시 - 사진 없이)
+  Future<void> _updateReview(String reviewId, int rating, String content) async {
+    final user = context.read<AuthService>().currentUser;
+    if (user == null) return;
+    
+    try {
+      await _restaurantService.updateReview(
+        reviewId: reviewId,
+        userId: user.id,
+        rating: rating,
+        content: content,
+      );
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('리뷰가 수정되었습니다.')),
+        );
+        _loadReviews();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('리뷰 수정 실패: $e')),
+        );
+      }
+    }
+  }
+  
+  /// 리뷰 삭제 실행
+  Future<void> _deleteReview(String reviewId) async {
+    final user = context.read<AuthService>().currentUser;
+    if (user == null) return;
+    
+    try {
+      await _restaurantService.deleteReview(
+        reviewId: reviewId,
+        userId: user.id,
+        restaurantId: widget.restaurant.id,
+      );
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('리뷰가 삭제되었습니다.')),
+        );
+        _loadReviews();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('리뷰 삭제 실패: $e')),
+        );
       }
     }
   }
@@ -330,40 +709,54 @@ $shareUrl''';
     setState(() => _isSubmittingReview = true);
     
     try {
-      List<String>? photoUrls;
-      
-      // 사진이 선택되었으면 업로드
+      // 사진이 있으면 업로드 중 표시 및 진행률 초기화
       if (_selectedPhotos.isNotEmpty) {
-        setState(() => _isUploadingPhotos = true);
-        
-        photoUrls = await _restaurantService.uploadReviewPhotos(
-          restaurantId: widget.restaurant.id,
-          userId: user.id,
-          photos: _selectedPhotos,
-        );
-        
-        setState(() => _isUploadingPhotos = false);
+        setState(() {
+          _isUploadingPhotos = true;
+          _uploadProgress = 0.0;
+          _currentUploadIndex = 0;
+          _totalUploadCount = _selectedPhotos.length;
+        });
       }
       
-      await _restaurantService.submitReview(
+      // 새로운 통합 함수 사용: 리뷰 등록 + 사진 업로드 + 음식점 사진 연동
+      final result = await _restaurantService.submitReviewWithPhotos(
         restaurantId: widget.restaurant.id,
         userId: user.id,
         rating: _userRating,
         content: _reviewController.text.trim(),
-        photoUrls: photoUrls,
+        photos: _selectedPhotos.isNotEmpty ? _selectedPhotos : null,
+        onProgress: (currentIndex, totalCount, progress) {
+          if (mounted) {
+            setState(() {
+              _currentUploadIndex = currentIndex;
+              _totalUploadCount = totalCount;
+              _uploadProgress = progress;
+            });
+          }
+        },
       );
       
       if (mounted) {
+        // 성공 메시지 (대표 이미지 설정 여부에 따라 다른 메시지)
+        String successMessage = '리뷰가 등록되었습니다.';
+        if (result.primaryPhotoSet) {
+          successMessage = '리뷰가 등록되었습니다. 사진이 음식점 대표 이미지로 설정되었습니다!';
+        } else if (result.photoUrls.isNotEmpty) {
+          successMessage = '리뷰가 등록되었습니다. 사진이 음식점 갤러리에 추가되었습니다!';
+        }
+        
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('리뷰가 등록되었습니다.')),
+          SnackBar(content: Text(successMessage)),
         );
         setState(() {
           _reviewController.clear();
           _userRating = 0;
           _selectedPhotos.clear();
         });
-        // 리뷰 목록 새로고침
+        // 리뷰 목록 및 이미지 새로고침
         _loadReviews();
+        _loadImages();
       }
     } catch (e) {
       if (mounted) {
@@ -376,12 +769,34 @@ $shareUrl''';
         setState(() {
           _isSubmittingReview = false;
           _isUploadingPhotos = false;
+          _uploadProgress = 0.0;
+          _currentUploadIndex = 0;
+          _totalUploadCount = 0;
         });
       }
     }
   }
 
+  // 이미지 로딩 실패 시 해당 URL 제거
+  void _onImageLoadFailed(String url) {
+    if (!_failedImageUrls.contains(url)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          setState(() {
+            _failedImageUrls.add(url);
+            _imageUrls.remove(url);
+            // 현재 인덱스 조정
+            if (_currentImageIndex >= _imageUrls.length && _imageUrls.isNotEmpty) {
+              _currentImageIndex = _imageUrls.length - 1;
+            }
+          });
+        }
+      });
+    }
+  }
+
   // 사진 슬라이더 위젯 (맨 위에 표시)
+  // 사진이 없거나 모든 사진 로딩에 실패하면 아무것도 표시하지 않음
   Widget _buildImageSlider() {
     if (_isLoadingImages) {
       return Container(
@@ -391,21 +806,9 @@ $shareUrl''';
       );
     }
 
+    // 사진이 없으면 빈 위젯 반환 (사진 영역 숨김)
     if (_imageUrls.isEmpty) {
-      return Container(
-        height: 250,
-        color: Colors.grey[200],
-        child: const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.photo_library, size: 60, color: Colors.grey),
-              SizedBox(height: 8),
-              Text('등록된 사진이 없습니다.', style: TextStyle(color: Colors.grey)),
-            ],
-          ),
-        ),
-      );
+      return const SizedBox.shrink();
     }
 
     return Stack(
@@ -420,8 +823,9 @@ $shareUrl''';
               setState(() => _currentImageIndex = index);
             },
             itemBuilder: (context, index) {
+              final imageUrl = _imageUrls[index];
               return Image.network(
-                _imageUrls[index],
+                imageUrl,
                 fit: BoxFit.cover,
                 width: double.infinity,
                 loadingBuilder: (context, child, loadingProgress) {
@@ -438,12 +842,12 @@ $shareUrl''';
                     ),
                   );
                 },
-                errorBuilder: (context, error, stackTrace) => Container(
-                  color: Colors.grey[200],
-                  child: const Center(
-                    child: Icon(Icons.image_not_supported, size: 50, color: Colors.grey),
-                  ),
-                ),
+                errorBuilder: (context, error, stackTrace) {
+                  // 로딩 실패 시 해당 이미지 제거
+                  _onImageLoadFailed(imageUrl);
+                  // 임시로 빈 컨테이너 반환 (다음 빌드에서 제거됨)
+                  return const SizedBox.shrink();
+                },
               );
             },
           ),
@@ -504,9 +908,11 @@ $shareUrl''';
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF9FAFB),
-      appBar: AppBar(
+    return GestureDetector(
+      onTap: () => FocusScope.of(context).unfocus(),
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF9FAFB),
+        appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
@@ -723,21 +1129,22 @@ $shareUrl''';
             
             const SizedBox(height: 8),
             
-            // 리뷰 작성 섹션
-            Container(
-              color: Colors.white,
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '리뷰 작성',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF111827),
+            // 리뷰 작성 섹션 (이미 리뷰를 작성한 경우 숨김)
+            if (!_hasUserReview)
+              Container(
+                color: Colors.white,
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '리뷰 작성',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF111827),
+                      ),
                     ),
-                  ),
                   const SizedBox(height: 16),
                   
                   // 별점 선택
@@ -779,26 +1186,34 @@ $shareUrl''';
                   ),
                   const SizedBox(height: 16),
                   
-                  // 리뷰 텍스트 입력
-                  TextField(
-                    controller: _reviewController,
-                    maxLines: 4,
-                    decoration: InputDecoration(
-                      hintText: '이 음식점에 대한 리뷰를 작성해주세요...',
-                      hintStyle: const TextStyle(color: Color(0xFF6B7280)), // Gray 500 - 명도 대비 개선
-                      filled: true,
-                      fillColor: const Color(0xFFF9FAFB),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0xFF3B82F6), width: 2),
+                  // 리뷰 텍스트 입력 (최소 4줄, 최대 8줄까지 확장, 이후 스크롤)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      maxHeight: 200, // 최대 높이 제한 (약 8줄 정도)
+                    ),
+                    child: TextField(
+                      controller: _reviewController,
+                      minLines: 4,
+                      maxLines: null, // 무제한으로 설정하되 ConstrainedBox가 제한
+                      keyboardType: TextInputType.multiline,
+                      scrollPhysics: const BouncingScrollPhysics(),
+                      decoration: InputDecoration(
+                        hintText: '이 음식점에 대한 리뷰를 작성해주세요...',
+                        hintStyle: const TextStyle(color: Color(0xFF6B7280)), // Gray 500 - 명도 대비 개선
+                        filled: true,
+                        fillColor: const Color(0xFFF9FAFB),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Color(0xFF3B82F6), width: 2),
+                        ),
                       ),
                     ),
                   ),
@@ -846,6 +1261,7 @@ $shareUrl''';
             const SizedBox(height: 20),
           ],
         ),
+      ),
       ),
     );
   }
@@ -1094,6 +1510,42 @@ $shareUrl''';
                 color: Color(0xFF6B7280), // Gray 500 - 명도 대비 개선
               ),
             ),
+            
+            // 내 리뷰인 경우 수정/삭제 버튼 표시
+            if (_isMyReview(review))
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert, size: 20, color: Color(0xFF6B7280)),
+                padding: EdgeInsets.zero,
+                onSelected: (value) {
+                  if (value == 'edit') {
+                    _showEditReviewDialog(review);
+                  } else if (value == 'delete') {
+                    _showDeleteReviewConfirmDialog(review);
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem<String>(
+                    value: 'edit',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit, size: 18, color: Color(0xFF374151)),
+                        SizedBox(width: 8),
+                        Text('수정'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete, size: 18, color: Color(0xFFEF4444)),
+                        SizedBox(width: 8),
+                        Text('삭제', style: TextStyle(color: Color(0xFFEF4444))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
           ],
         ),
         
@@ -1367,23 +1819,47 @@ $shareUrl''';
             ),
           ),
         
-        // 업로드 중 표시
+        // 업로드 중 진행률 표시
         if (_isUploadingPhotos)
-          const Padding(
-            padding: EdgeInsets.only(top: 8),
-            child: Row(
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                Row(
+                  children: [
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '사진 업로드 중... ($_currentUploadIndex/$_totalUploadCount)',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF6B7280),
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '${(_uploadProgress * 100).toInt()}%',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF3B82F6),
+                      ),
+                    ),
+                  ],
                 ),
-                SizedBox(width: 8),
-                Text(
-                  '사진 업로드 중...',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF6B7280),
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: _uploadProgress,
+                    backgroundColor: const Color(0xFFE5E7EB),
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
+                    minHeight: 6,
                   ),
                 ),
               ],

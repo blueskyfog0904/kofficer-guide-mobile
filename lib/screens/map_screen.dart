@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/restaurant.dart';
 import '../services/restaurant_service.dart';
+import '../services/map_height_service.dart';
 import 'restaurant_detail_screen.dart';
 
 class MapScreen extends StatefulWidget {
@@ -35,7 +36,7 @@ class _MapScreenState extends State<MapScreen> {
   // WebView 관련
   InAppWebViewController? _webViewController;
   bool _isMapReady = false;
-  bool _isWebViewLoaded = false; // WebView 로드 완료 여부
+  bool _isWebViewLoaded = false;
   String? _mapHtmlContent;
   
   // 마커 데이터
@@ -44,26 +45,59 @@ class _MapScreenState extends State<MapScreen> {
   // 지도 초기화 대기 플래그
   bool _pendingMapInit = false;
   
-  // 마지막으로 클릭한 음식점 ID (더블클릭 감지용)
+  // 마지막으로 클릭한 음식점 ID
   String? _lastClickedRestaurantId;
   
   // 음식점별 거리 정보
   Map<String, double> _restaurantDistances = {};
   
+  // 음식점 첫 번째 사진 캐시 (primary_photo_url이 없는 음식점용)
+  final Map<String, String> _restaurantPhotos = {};
+  
   // 하단 리스트 스크롤 컨트롤러
   final ScrollController _listScrollController = ScrollController();
+  
+  // 리스트 영역 높이 옵션 (0: 작게, 1: 중간, 2: 크게, 3: 전체)
+  int _listSizeIndex = 1;
+  
+  // 리스트 영역 높이 비율
+  final List<double> _listHeightFactors = [0.25, 0.4, 0.6, 1.0];
 
   @override
   void initState() {
     super.initState();
     _loadMapHtml();
     _getCurrentLocation();
+    _loadSavedListSize();
   }
   
   @override
   void dispose() {
     _listScrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadSavedListSize() async {
+    final savedIndex = await MapHeightService.loadMapScreenSnapIndex();
+    setState(() {
+      _listSizeIndex = savedIndex.clamp(0, 3);
+    });
+  }
+
+  void _onListSizeChanged(int index) {
+    if (_listSizeIndex != index) {
+      setState(() {
+        _listSizeIndex = index;
+      });
+      MapHeightService.saveMapScreenSnapIndex(index);
+      
+      // 지도 크기 변경 후 relayout 트리거
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (_webViewController != null && _isMapReady) {
+          _webViewController!.evaluateJavascript(source: 'if(map) map.relayout();');
+        }
+      });
+    }
   }
 
   Future<void> _loadMapHtml() async {
@@ -74,7 +108,6 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _mapHtmlContent = htmlContent;
       });
-      print('✅ Map HTML loaded with JS Key');
     } catch (e) {
       print('❌ Error loading map HTML: $e');
     }
@@ -87,7 +120,6 @@ class _MapScreenState extends State<MapScreen> {
     });
 
     try {
-      // 위치 서비스 활성화 확인
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         setState(() {
@@ -97,13 +129,12 @@ class _MapScreenState extends State<MapScreen> {
         return;
       }
 
-      // 위치 권한 확인
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
           setState(() {
-            _locationError = '위치 권한이 거부되었습니다.\n주변 맛집을 찾으려면 위치 권한이 필요합니다.';
+            _locationError = '위치 권한이 거부되었습니다.';
             _isLoadingLocation = false;
           });
           return;
@@ -112,32 +143,24 @@ class _MapScreenState extends State<MapScreen> {
 
       if (permission == LocationPermission.deniedForever) {
         setState(() {
-          _locationError = '위치 권한이 영구적으로 거부되었습니다.\n설정에서 위치 권한을 허용해주세요.';
+          _locationError = '위치 권한이 영구적으로 거부되었습니다.';
           _isLoadingLocation = false;
         });
         return;
       }
 
-      // 현재 위치 가져오기
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
 
-      print('✅ Current location: ${position.latitude}, ${position.longitude}');
-
-      // 한국 좌표 범위 확인 (위도 33~43, 경도 124~132)
-      // 범위 밖이면 에뮬레이터나 해외로 간주하여 서울 기본 좌표 사용
       final bool isInKorea = _isLocationInKorea(position.latitude, position.longitude);
       
       if (isInKorea) {
-        // 실제 한국 내 위치 - 그대로 사용
         setState(() {
           _currentPosition = position;
           _isLoadingLocation = false;
         });
-        print('📍 Using actual location (Korea)');
       } else {
-        // 에뮬레이터나 해외 위치 - 테스트용 서울 기본 좌표 사용
         setState(() {
           _currentPosition = Position(
             latitude: 37.5665,
@@ -153,54 +176,35 @@ class _MapScreenState extends State<MapScreen> {
           );
           _isLoadingLocation = false;
         });
-        print('⚠️ Location outside Korea (${position.latitude}, ${position.longitude}) - Using default Seoul location for testing');
       }
 
-      // 위치를 가져온 후 주변 음식점 검색
       _searchNearbyRestaurants();
     } catch (e) {
-      print('❌ Error getting location: $e');
       setState(() {
-        _locationError = '위치를 가져오는 중 오류가 발생했습니다.\n다시 시도해주세요.';
+        _locationError = '위치를 가져오는 중 오류가 발생했습니다.';
         _isLoadingLocation = false;
       });
     }
   }
 
-  /// Haversine 공식을 사용한 두 지점 간 거리 계산 (km)
   double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
-    const double earthRadius = 6371; // 지구 반지름 (km)
-    
+    const double earthRadius = 6371;
     final double dLat = _toRadians(lat2 - lat1);
     final double dLon = _toRadians(lon2 - lon1);
-    
-    final double a = 
-        sin(dLat / 2) * sin(dLat / 2) +
+    final double a = sin(dLat / 2) * sin(dLat / 2) +
         cos(_toRadians(lat1)) * cos(_toRadians(lat2)) *
         sin(dLon / 2) * sin(dLon / 2);
-    
     final double c = 2 * atan2(sqrt(a), sqrt(1 - a));
-    
     return earthRadius * c;
   }
 
   double _toRadians(double degree) => degree * pi / 180;
   
-  /// 좌표가 한국 범위 내에 있는지 확인
-  /// 한국 범위: 위도 33~43, 경도 124~132
   bool _isLocationInKorea(double latitude, double longitude) {
-    const double minLat = 33.0;  // 제주도 남쪽
-    const double maxLat = 43.0;  // 북한 북쪽
-    const double minLng = 124.0; // 서해
-    const double maxLng = 132.0; // 동해 (독도 포함)
-    
-    return latitude >= minLat && 
-           latitude <= maxLat && 
-           longitude >= minLng && 
-           longitude <= maxLng;
+    return latitude >= 33.0 && latitude <= 43.0 && 
+           longitude >= 124.0 && longitude <= 132.0;
   }
   
-  /// 거리를 보기 좋게 포맷팅
   String _formatDistance(double distanceKm) {
     if (distanceKm < 1) {
       return '${(distanceKm * 1000).round()}m';
@@ -215,26 +219,23 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       _isLoadingRestaurants = true;
       _isMapReady = false;
-      _lastClickedRestaurantId = null; // 클릭 상태 초기화
+      _lastClickedRestaurantId = null;
     });
 
     try {
-      // 선택된 반경으로 주변 음식점 검색 (Web과 동일한 Bounding Box 방식)
       final restaurants = await _restaurantService.getNearbyRestaurants(
         latitude: _currentPosition!.latitude,
         longitude: _currentPosition!.longitude,
         radiusKm: _selectedRadius,
-        limit: 2000, // 충분히 많이 가져오기
+        limit: 2000,
       );
 
-      // 마커 데이터 생성 (거리 정보 포함)
       final markers = <Map<String, dynamic>>[];
       final distances = <String, double>{};
       
       for (int i = 0; i < restaurants.length; i++) {
         final r = restaurants[i];
         if (r.latitude != null && r.longitude != null) {
-          // 거리 계산
           final distance = _calculateDistance(
             _currentPosition!.latitude,
             _currentPosition!.longitude,
@@ -245,11 +246,11 @@ class _MapScreenState extends State<MapScreen> {
           
           markers.add({
             'id': r.id,
-            'name': r.name,
+            'name': r.title ?? r.name,
             'lat': r.latitude,
             'lng': r.longitude,
             'rank': i + 1,
-            'distance': _formatDistance(distance), // 거리 정보 추가
+            'distance': _formatDistance(distance),
           });
         }
       }
@@ -261,26 +262,44 @@ class _MapScreenState extends State<MapScreen> {
         _isLoadingRestaurants = false;
       });
 
-      print('✅ Found ${restaurants.length} nearby restaurants');
+      // primary_photo_url이 없는 음식점들의 첫 번째 사진 일괄 조회
+      _fetchMissingPhotos(restaurants);
 
-      // 지도 초기화 - WebView가 로드된 경우에만
       if (_webViewController != null && _isWebViewLoaded) {
         await _initializeMap();
       } else {
-        // WebView가 아직 로드되지 않았으면 대기 플래그 설정
         _pendingMapInit = true;
       }
     } catch (e) {
-      print('❌ Error searching nearby restaurants: $e');
       setState(() {
         _isLoadingRestaurants = false;
       });
     }
   }
 
+  /// primary_photo_url이 없는 음식점들의 첫 번째 사진을 일괄 조회
+  Future<void> _fetchMissingPhotos(List<Restaurant> restaurants) async {
+    final idsWithoutPhoto = restaurants
+        .where((r) => r.primaryPhotoUrl == null || r.primaryPhotoUrl!.isEmpty)
+        .map((r) => r.id)
+        .toList();
+    
+    if (idsWithoutPhoto.isEmpty) return;
+    
+    try {
+      final photos = await _restaurantService.getFirstPhotosForRestaurants(idsWithoutPhoto);
+      if (mounted && photos.isNotEmpty) {
+        setState(() {
+          _restaurantPhotos.addAll(photos);
+        });
+      }
+    } catch (e) {
+      print('Error fetching missing photos: $e');
+    }
+  }
+
   Future<void> _initializeMap() async {
     if (_webViewController == null || _currentPosition == null || !_isWebViewLoaded) {
-      print('⚠️ WebView or position not ready (webView: ${_webViewController != null}, position: ${_currentPosition != null}, loaded: $_isWebViewLoaded)');
       return;
     }
 
@@ -288,7 +307,6 @@ class _MapScreenState extends State<MapScreen> {
     final centerLng = _currentPosition!.longitude;
     final markersJson = jsonEncode(_restaurantMarkers);
     
-    // JSON 문자열 이스케이프 처리
     final escapedJson = markersJson
         .replaceAll('\\', '\\\\')
         .replaceAll("'", "\\'")
@@ -296,45 +314,27 @@ class _MapScreenState extends State<MapScreen> {
         .replaceAll('\r', '\\r');
 
     try {
-      // JavaScript 함수가 정의될 때까지 잠시 대기 (SDK 로딩 시간 포함)
       await Future.delayed(const Duration(milliseconds: 500));
       
-      print('🗺️ Calling initializeMap JS function...');
-      final result = await _webViewController!.evaluateJavascript(
+      await _webViewController!.evaluateJavascript(
         source: '''
           (function() {
             try {
               if (typeof initializeMap === 'function') {
                 initializeMap($centerLat, $centerLng, '$escapedJson', true);
                 return 'success';
-              } else {
-                return 'error: initializeMap not defined';
               }
-            } catch (e) {
-              return 'error: ' + e.message;
-            }
+            } catch (e) {}
           })();
         ''',
       );
-      print('✅ Map initialized: $result');
       
       setState(() {
         _isMapReady = true;
         _pendingMapInit = false;
       });
-      
-      // 지도가 초기화된 후 내 위치 중심으로 이동 (마커가 없는 경우에만)
-      if (_currentPosition != null && _restaurantMarkers.isEmpty) {
-        await Future.delayed(const Duration(milliseconds: 500));
-        await _webViewController!.evaluateJavascript(
-          source: 'moveCamera($_currentPosition!.latitude, $_currentPosition!.longitude);',
-        );
-      }
     } catch (e) {
-      print('❌ Error initializing map: $e');
-      // 재시도
       if (!_isMapReady && mounted) {
-        print('🔄 Retrying map initialization in 1 second...');
         await Future.delayed(const Duration(seconds: 1));
         await _initializeMap();
       }
@@ -350,12 +350,22 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  void _selectMarker(String restaurantId) async {
+  void _selectMarkerAndMoveCamera(String restaurantId) async {
     if (_webViewController == null || !_isMapReady) return;
 
     try {
+      // 마커 선택 및 지도 중심 이동 (relayout 포함)
       await _webViewController!.evaluateJavascript(
-        source: 'selectMarker("$restaurantId");',
+        source: '''
+          (function() {
+            if(map) {
+              map.relayout();
+              setTimeout(function() {
+                selectMarker("$restaurantId");
+              }, 100);
+            }
+          })();
+        ''',
       );
     } catch (e) {
       print('❌ Error selecting marker: $e');
@@ -363,13 +373,9 @@ class _MapScreenState extends State<MapScreen> {
   }
   
   void _scrollToRestaurant(int index) {
-    // 하단 리스트에서 해당 음식점 카드로 스크롤
     if (_listScrollController.hasClients) {
-      // 카드 높이 + 마진을 고려한 스크롤 위치 계산
-      const cardHeight = 100.0; // 카드 높이
-      const cardMargin = 12.0; // 카드 마진
-      const headerHeight = 50.0; // 헤더 높이
-      final scrollPosition = (cardHeight + cardMargin) * index + headerHeight;
+      const cardTotalHeight = 112.0;
+      final scrollPosition = cardTotalHeight * index;
       
       _listScrollController.animateTo(
         scrollPosition,
@@ -379,88 +385,117 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  Widget _buildRadiusSelector() {
+  Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Row(
+          children: [
+            const Text(
+              '내 주변 맛집',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF111827),
+              ),
+            ),
+            const SizedBox(width: 12),
+            // 라디오 버튼들
+            _buildRadiusChip(1.0, '1km'),
+            const SizedBox(width: 6),
+            _buildRadiusChip(5.0, '5km'),
+            const SizedBox(width: 6),
+            _buildRadiusChip(10.0, '10km'),
+            const Spacer(),
+            // 새로고침 버튼
+            IconButton(
+              icon: const Icon(Icons.refresh, size: 22),
+              onPressed: _getCurrentLocation,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // SafeArea 없는 헤더 (build에서 SafeArea를 외부에서 처리할 때 사용)
+  Widget _buildHeaderContent() {
+    return Container(
+      height: 56,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
             blurRadius: 4,
             offset: const Offset(0, 2),
           ),
         ],
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const Text(
-            '검색 반경: ',
+            '내 주변 맛집',
             style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-              color: Color(0xFF374151),
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF111827),
             ),
           ),
-          _buildRadioOption(1.0, '1km'),
-          _buildRadioOption(5.0, '5km'),
-          _buildRadioOption(10.0, '10km'),
+          const SizedBox(width: 12),
+          // 라디오 버튼들
+          _buildRadiusChip(1.0, '1km'),
+          const SizedBox(width: 6),
+          _buildRadiusChip(5.0, '5km'),
+          const SizedBox(width: 6),
+          _buildRadiusChip(10.0, '10km'),
+          const Spacer(),
+          // 새로고침 버튼
+          IconButton(
+            icon: const Icon(Icons.refresh, size: 22),
+            onPressed: _getCurrentLocation,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildRadioOption(double value, String label) {
+  Widget _buildRadiusChip(double value, String label) {
     final isSelected = _selectedRadius == value;
     return GestureDetector(
       onTap: () => _onRadiusChanged(value),
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFF3B82F6) : Colors.white,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: isSelected ? const Color(0xFF3B82F6) : const Color(0xFFD1D5DB),
           ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 16,
-              height: 16,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isSelected ? Colors.white : const Color(0xFF9CA3AF),
-                  width: 2,
-                ),
-              ),
-              child: isSelected
-                  ? Center(
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: Colors.white,
-                        ),
-                      ),
-                    )
-                  : null,
-            ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 14,
-                color: isSelected ? Colors.white : const Color(0xFF374151),
-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-              ),
-            ),
-          ],
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: isSelected ? Colors.white : const Color(0xFF374151),
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+          ),
         ),
       ),
     );
@@ -472,13 +507,13 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     if (_isLoadingLocation) {
-      return Center(
+      return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            const Text('현재 위치를 가져오는 중...'),
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('현재 위치를 가져오는 중...'),
           ],
         ),
       );
@@ -493,30 +528,12 @@ class _MapScreenState extends State<MapScreen> {
             children: [
               const Icon(Icons.location_off, size: 64, color: Color(0xFF9CA3AF)),
               const SizedBox(height: 16),
-              Text(
-                _locationError!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 16,
-                  color: Color(0xFF6B7280),
-                ),
-              ),
+              Text(_locationError!, textAlign: TextAlign.center),
               const SizedBox(height: 24),
               ElevatedButton.icon(
                 onPressed: _getCurrentLocation,
                 icon: const Icon(Icons.refresh),
                 label: const Text('다시 시도'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF3B82F6),
-                  foregroundColor: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextButton(
-                onPressed: () async {
-                  await Geolocator.openLocationSettings();
-                },
-                child: const Text('위치 설정 열기'),
               ),
             ],
           ),
@@ -541,15 +558,12 @@ class _MapScreenState extends State<MapScreen> {
           onWebViewCreated: (controller) {
             _webViewController = controller;
 
-            // 마커 클릭 핸들러 등록
             controller.addJavaScriptHandler(
               handlerName: 'onMarkerClick',
               callback: (args) {
                 if (args.length >= 3) {
                   final restaurantId = args[0] as String;
-                  final restaurantName = args[1] as String;
                   final isDoubleClick = args[2] as bool? ?? false;
-                  print('📍 Marker clicked: $restaurantName ($restaurantId), doubleClick: $isDoubleClick');
 
                   final restaurantIndex = _restaurants.indexWhere((r) => r.id == restaurantId);
                   if (restaurantIndex == -1) return null;
@@ -557,7 +571,6 @@ class _MapScreenState extends State<MapScreen> {
                   final restaurant = _restaurants[restaurantIndex];
 
                   if (isDoubleClick) {
-                    // 더블클릭: 상세 페이지로 이동
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -565,46 +578,47 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                     );
                   } else {
-                    // 첫 클릭: 지도 중심 이동, 하단 카드 선택 및 스크롤
                     setState(() {
                       _lastClickedRestaurantId = restaurant.id;
                     });
-                    _selectMarker(restaurant.id);
                     _scrollToRestaurant(restaurantIndex);
                   }
                 }
                 return null;
               },
             );
+            
+            // 클러스터 클릭 핸들러
+            controller.addJavaScriptHandler(
+              handlerName: 'onClusterClick',
+              callback: (args) {
+                if (args.length >= 3) {
+                  final count = args[0] as int;
+                  final lat = args[1] as double;
+                  final lng = args[2] as double;
+                  print('🔍 Cluster clicked: $count restaurants at ($lat, $lng)');
+                }
+                return null;
+              },
+            );
           },
           onLoadStop: (controller, url) async {
-            print('✅ WebView loaded, waiting for Kakao SDK...');
             setState(() {
               _isWebViewLoaded = true;
             });
             
-            // 카카오 SDK 로딩을 위한 충분한 시간 대기
-            // SDK 스크립트가 네트워크에서 로드되어야 하므로 더 긴 시간 필요
             await Future.delayed(const Duration(milliseconds: 1500));
             
-            print('✅ Starting map initialization...');
-            
-            // 대기 중인 초기화가 있거나, 현재 위치가 있으면 초기화
             if (_pendingMapInit || _currentPosition != null) {
               await _initializeMap();
             }
           },
-          onConsoleMessage: (controller, consoleMessage) {
-            print('🌐 WebView Console: ${consoleMessage.message}');
-          },
         ),
-        // 로딩 인디케이터 (WebView 로드 전에만 표시)
         if (!_isWebViewLoaded)
           Container(
             color: Colors.white,
             child: const Center(child: CircularProgressIndicator()),
           ),
-        // 현재 위치 버튼
         Positioned(
           right: 16,
           bottom: 16,
@@ -619,6 +633,64 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  Widget _buildListSizeButton(int index, String label) {
+    final isSelected = _listSizeIndex == index;
+    return GestureDetector(
+      onTap: () => _onListSizeChanged(index),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF3B82F6) : Colors.grey.shade200,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: isSelected ? Colors.white : const Color(0xFF6B7280),
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 이미지가 없을 때 표시할 플레이스홀더 위젯
+  Widget _buildImagePlaceholder() {
+    return Container(
+      height: 100,
+      width: 100,
+      color: const Color(0xFFF3F4F6),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Opacity(
+            opacity: 0.4,
+            child: Image.asset(
+              'assets/images/project_logo.png',
+              height: 50,
+              width: 50,
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => const Icon(
+                Icons.restaurant,
+                size: 40,
+                color: Color(0xFF9CA3AF),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            '이미지 준비 중',
+            style: TextStyle(
+              fontSize: 10,
+              color: Color(0xFF9CA3AF),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildRestaurantCard(Restaurant restaurant, int index) {
     final isSelected = _lastClickedRestaurantId == restaurant.id;
     final distance = _restaurantDistances[restaurant.id];
@@ -627,7 +699,6 @@ class _MapScreenState extends State<MapScreen> {
     return GestureDetector(
       onTap: () {
         if (_lastClickedRestaurantId == restaurant.id) {
-          // 두 번째 클릭: 상세 페이지로 이동
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -635,16 +706,14 @@ class _MapScreenState extends State<MapScreen> {
             ),
           );
         } else {
-          // 첫 번째 클릭: 지도에서 해당 위치로 이동, 하단 카드 선택 및 스크롤
           setState(() {
             _lastClickedRestaurantId = restaurant.id;
           });
-          _selectMarker(restaurant.id);
-          _scrollToRestaurant(index);
+          _selectMarkerAndMoveCamera(restaurant.id);
           
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${restaurant.name} 위치로 이동했습니다. 다시 탭하면 상세 페이지로 이동합니다.'),
+              content: Text('${restaurant.title ?? restaurant.name} - 다시 탭하면 상세 페이지로 이동'),
               duration: const Duration(seconds: 2),
             ),
           );
@@ -668,30 +737,38 @@ class _MapScreenState extends State<MapScreen> {
         ),
         child: Row(
           children: [
-            // 이미지
             ClipRRect(
               borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)),
               child: Stack(
                 children: [
-                  CachedNetworkImage(
-                    imageUrl: restaurant.primaryPhotoUrl ?? '',
-                    height: 100,
-                    width: 100,
-                    fit: BoxFit.cover,
-                    placeholder: (context, url) => Container(
-                      height: 100,
-                      width: 100,
-                      color: const Color(0xFFF3F4F6),
-                      child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-                    ),
-                    errorWidget: (context, url, error) => Container(
-                      height: 100,
-                      width: 100,
-                      color: const Color(0xFFF3F4F6),
-                      child: const Icon(Icons.restaurant, size: 40, color: Color(0xFF9CA3AF)),
-                    ),
+                  // 이미지 또는 플레이스홀더
+                  // 1. primaryPhotoUrl 확인, 2. _restaurantPhotos 캐시 확인
+                  Builder(
+                    builder: (context) {
+                      final photoUrl = restaurant.primaryPhotoUrl?.isNotEmpty == true
+                          ? restaurant.primaryPhotoUrl!
+                          : _restaurantPhotos[restaurant.id];
+                      
+                      if (photoUrl != null && photoUrl.isNotEmpty) {
+                        return CachedNetworkImage(
+                          imageUrl: photoUrl,
+                          height: 100,
+                          width: 100,
+                          fit: BoxFit.cover,
+                          placeholder: (context, url) => Container(
+                            height: 100,
+                            width: 100,
+                            color: const Color(0xFFF3F4F6),
+                            child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                          ),
+                          errorWidget: (context, url, error) => _buildImagePlaceholder(),
+                        );
+                      } else {
+                        return _buildImagePlaceholder();
+                      }
+                    },
                   ),
-                  // 순위 배지
+                  // 인덱스 배지 (1, 2, 3...)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -714,7 +791,6 @@ class _MapScreenState extends State<MapScreen> {
                 ],
               ),
             ),
-            // 정보
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -722,12 +798,11 @@ class _MapScreenState extends State<MapScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // 음식점 이름 + 거리
                     Row(
                       children: [
                         Flexible(
                           child: Text(
-                            restaurant.name,
+                            restaurant.title ?? restaurant.name,
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
@@ -754,10 +829,7 @@ class _MapScreenState extends State<MapScreen> {
                     if (restaurant.category != null)
                       Text(
                         restaurant.category!,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Color(0xFF6B7280),
-                        ),
+                        style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -768,35 +840,40 @@ class _MapScreenState extends State<MapScreen> {
                         const SizedBox(width: 4),
                         Text(
                           '${restaurant.avgRating?.toStringAsFixed(1) ?? '0.0'}',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Color(0xFF374151),
-                          ),
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
                         ),
                         const SizedBox(width: 12),
                         const Icon(Icons.comment_outlined, size: 16, color: Color(0xFF9CA3AF)),
                         const SizedBox(width: 4),
-                        Text(
-                          '${restaurant.reviewCount ?? 0}',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Color(0xFF6B7280),
+                        Text('${restaurant.reviewCount ?? 0}', style: const TextStyle(fontSize: 14, color: Color(0xFF6B7280))),
+                        // 순위 배지 (공무원 N위) - 별점/리뷰 옆에 배치
+                        if (restaurant.regionRank != null) ...[
+                          const SizedBox(width: 12),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              '공무원 ${restaurant.regionRank}위',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF059669),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ],
                 ),
               ),
             ),
-            // 화살표 아이콘
             const Padding(
               padding: EdgeInsets.only(right: 12),
-              child: Icon(
-                Icons.chevron_right,
-                color: Color(0xFF9CA3AF),
-              ),
+              child: Icon(Icons.chevron_right, color: Color(0xFF9CA3AF)),
             ),
           ],
         ),
@@ -804,124 +881,109 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  Widget _buildRestaurantList() {
-    if (_isLoadingRestaurants) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (_restaurants.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.restaurant, size: 48, color: Color(0xFF9CA3AF)),
-            const SizedBox(height: 12),
-            Text(
-              '${_selectedRadius.toInt()}km 내에 음식점이 없습니다.',
-              style: const TextStyle(
-                fontSize: 14,
-                color: Color(0xFF6B7280),
+  Widget _buildRestaurantList(double height) {
+    return Container(
+      height: height,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 8,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          // 헤더 + 크기 조절 버튼
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              border: Border(
+                bottom: BorderSide(color: Colors.grey.shade200, width: 1),
               ),
             ),
-          ],
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 헤더
-        Container(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            border: Border(
-              bottom: BorderSide(
-                color: Colors.grey.shade200,
-                width: 1,
-              ),
+            child: Row(
+              children: [
+                Text(
+                  '주변 맛집 (${_restaurants.length}개)',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF111827),
+                  ),
+                ),
+                const Spacer(),
+                // 크기 조절 라디오 버튼
+                _buildListSizeButton(0, '작게'),
+                const SizedBox(width: 6),
+                _buildListSizeButton(1, '중간'),
+                const SizedBox(width: 6),
+                _buildListSizeButton(2, '크게'),
+                const SizedBox(width: 6),
+                _buildListSizeButton(3, '전체'),
+              ],
             ),
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '주변 맛집 (${_restaurants.length}개)',
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF111827),
-                ),
-              ),
-              Text(
-                '${_selectedRadius.toInt()}km 이내',
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: Color(0xFF6B7280),
-                ),
-              ),
-            ],
+          // 리스트 (독립적인 스크롤 영역)
+          Expanded(
+            child: _isLoadingRestaurants
+                ? const Center(child: CircularProgressIndicator())
+                : _restaurants.isEmpty
+                    ? Center(
+                        child: Text('${_selectedRadius.toInt()}km 내에 음식점이 없습니다.'),
+                      )
+                    : GestureDetector(
+                        // 수직 드래그를 이 영역에서 가로채서 지도로 전파되지 않도록 함
+                        onVerticalDragStart: (_) {},
+                        onVerticalDragUpdate: (_) {},
+                        onVerticalDragEnd: (_) {},
+                        child: ListView.builder(
+                          controller: _listScrollController,
+                          padding: const EdgeInsets.all(16),
+                          physics: const ClampingScrollPhysics(),
+                          itemCount: _restaurants.length,
+                          itemBuilder: (context, index) {
+                            return _buildRestaurantCard(_restaurants[index], index);
+                          },
+                        ),
+                      ),
           ),
-        ),
-        // 세로 스크롤 리스트
-        Expanded(
-          child: ListView.builder(
-            controller: _listScrollController,
-            padding: const EdgeInsets.all(16),
-            scrollDirection: Axis.vertical,
-            itemCount: _restaurants.length,
-            itemBuilder: (context, index) {
-              return _buildRestaurantCard(_restaurants[index], index);
-            },
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    const headerContentHeight = 56.0;
+    
     return Scaffold(
       backgroundColor: const Color(0xFFF9FAFB),
-      appBar: AppBar(
-        title: const Text('내 주변 맛집'),
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              _getCurrentLocation();
-            },
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // 거리 선택 라디오 버튼
-          _buildRadiusSelector(),
-          
-          // 지도 영역 (확장)
-          Expanded(
-            child: _buildMap(),
-          ),
-          
-          // 음식점 카드 리스트 (고정 높이 - 카드 1개 정도)
-          Container(
-            height: 180,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 4,
-                  offset: const Offset(0, -2),
+      body: SafeArea(
+        bottom: false,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final availableHeight = constraints.maxHeight - headerContentHeight;
+            final listHeight = availableHeight * _listHeightFactors[_listSizeIndex];
+            final mapHeight = availableHeight - listHeight;
+            
+            return Column(
+              children: [
+                _buildHeaderContent(),
+                SizedBox(
+                  height: mapHeight,
+                  child: _buildMap(),
                 ),
+                _buildRestaurantList(listHeight),
               ],
-            ),
-            child: _buildRestaurantList(),
-          ),
-        ],
+            );
+          },
+        ),
       ),
     );
   }

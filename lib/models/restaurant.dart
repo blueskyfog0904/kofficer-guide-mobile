@@ -19,6 +19,7 @@ class Restaurant {
   final double? avgRating;
   final int? visitCount;
   final int? rankPosition;
+  final int? regionRank; // 지역 내 순위 (시/군/구 단위, DENSE_RANK)
   final List<RestaurantImage>? images;
 
   Restaurant({
@@ -40,6 +41,7 @@ class Restaurant {
     this.avgRating,
     this.visitCount,
     this.rankPosition,
+    this.regionRank,
     this.images,
   });
 
@@ -63,6 +65,7 @@ class Restaurant {
       avgRating: json['avg_rating']?.toDouble(),
       visitCount: json['visit_count'],
       rankPosition: json['rank_position'],
+      regionRank: json['region_rank'],
       images: (json['images'] as List?)
           ?.map((e) => RestaurantImage.fromJson(e))
           .toList(),

@@ -119,8 +119,8 @@ class ReviewPhoto {
       photoUrl: json['photo_url'] ?? '',
       description: json['description'],
       displayOrder: json['display_order'] ?? 0,
-      uploadedAt: json['uploaded_at'] != null 
-          ? DateTime.parse(json['uploaded_at']) 
+      uploadedAt: json['created_at'] != null 
+          ? DateTime.parse(json['created_at']) 
           : null,
     );
   }
@@ -132,7 +132,7 @@ class ReviewPhoto {
       'photo_url': photoUrl,
       'description': description,
       'display_order': displayOrder,
-      'uploaded_at': uploadedAt?.toIso8601String(),
+      'created_at': uploadedAt?.toIso8601String(),
     };
   }
 }

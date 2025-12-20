@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/restaurant.dart';
 import '../models/user_activity.dart';
 import 'supabase_service.dart';
+import 'restaurant_service.dart';
 
 /// 사용자 프로필 모델
 class UserProfile {
@@ -282,13 +283,20 @@ class UserService {
     }
   }
 
-  // 리뷰 삭제
+  // 리뷰 삭제 (연관된 restaurant_photos도 비활성화)
   Future<bool> deleteReview(String reviewId) async {
     try {
+      // 1. 연관된 restaurant_photos 비활성화
+      final restaurantService = RestaurantService();
+      await restaurantService.deactivateRestaurantPhotosForReview(reviewId);
+      
+      // 2. 리뷰 삭제
       await _client
           .from('reviews')
           .delete()
           .eq('id', reviewId);
+      
+      print('✅ Review $reviewId deleted with associated photos deactivated');
       return true;
     } catch (e) {
       print('Error deleting review: $e');

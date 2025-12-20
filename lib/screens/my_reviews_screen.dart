@@ -158,6 +158,47 @@ class _MyReviewsScreenState extends State<MyReviewsScreen> {
     }
   }
 
+  Future<void> _deleteReview(Review review) async {
+    // 삭제 확인 다이얼로그
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('리뷰 삭제'),
+        content: Text(
+          '\'${review.restaurant?.name ?? '음식점'}\' 리뷰를 삭제하시겠습니까?\n\n삭제된 리뷰와 관련 사진은 복구할 수 없습니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final success = await _userService.deleteReview(review.id);
+
+    if (mounted) {
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('리뷰가 삭제되었습니다.')),
+        );
+        _loadReviews(); // 새로고침
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('리뷰 삭제에 실패했습니다.')),
+        );
+      }
+    }
+  }
+
   String _formatDate(DateTime date) {
     return '${date.year}.${date.month.toString().padLeft(2, '0')}.${date.day.toString().padLeft(2, '0')}';
   }
@@ -222,6 +263,11 @@ class _MyReviewsScreenState extends State<MyReviewsScreen> {
                                 TextButton(
                                   onPressed: () => _showEditReviewDialog(review),
                                   child: const Text('수정'),
+                                ),
+                                TextButton(
+                                  onPressed: () => _deleteReview(review),
+                                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                                  child: const Text('삭제'),
                                 ),
                               ],
                             ),

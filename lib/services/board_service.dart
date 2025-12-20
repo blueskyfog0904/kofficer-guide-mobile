@@ -81,18 +81,22 @@ class BoardService {
 
       final posts = <Post>[];
       for (final postJson in response as List) {
-        // 작성자 정보 별도 조회
+        // 작성자 정보 별도 조회 (mob_nickname 우선, 없으면 nickname 사용)
         PostAuthor? author;
         if (postJson['author_id'] != null) {
           try {
             final authorResponse = await _client
                 .from('profiles')
-                .select('nickname, avatar_url')
+                .select('mob_nickname, nickname, avatar_url')
                 .eq('user_id', postJson['author_id'])
                 .maybeSingle();
             
             if (authorResponse != null) {
-              author = PostAuthor.fromJson(authorResponse as Map<String, dynamic>);
+              final displayName = authorResponse['mob_nickname'] ?? authorResponse['nickname'];
+              author = PostAuthor.fromJson({
+                'nickname': displayName,
+                'avatar_url': authorResponse['avatar_url'],
+              });
             }
           } catch (e) {
             print('작성자 정보 조회 실패: $e');
@@ -128,18 +132,22 @@ class BoardService {
           .update({'view_count': (response['view_count'] ?? 0) + 1})
           .eq('id', id);
 
-      // 작성자 정보 별도 조회
+      // 작성자 정보 별도 조회 (mob_nickname 우선, 없으면 nickname 사용)
       PostAuthor? author;
       if (response['author_id'] != null) {
         try {
           final authorResponse = await _client
               .from('profiles')
-              .select('nickname, avatar_url')
+              .select('mob_nickname, nickname, avatar_url')
               .eq('user_id', response['author_id'])
               .maybeSingle();
           
           if (authorResponse != null) {
-            author = PostAuthor.fromJson(authorResponse as Map<String, dynamic>);
+            final displayName = authorResponse['mob_nickname'] ?? authorResponse['nickname'];
+            author = PostAuthor.fromJson({
+              'nickname': displayName,
+              'avatar_url': authorResponse['avatar_url'],
+            });
           }
         } catch (e) {
           print('작성자 정보 조회 실패: $e');
