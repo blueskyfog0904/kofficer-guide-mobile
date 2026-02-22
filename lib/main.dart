@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:app_links/app_links.dart';
 import 'services/supabase_service.dart';
 import 'services/auth_service.dart';
+import 'services/admob_service.dart';
 import 'screens/splash_screen.dart';
 
 // app_links 카카오 딥링크 핸들러 (Android에서 Supabase app_links 충돌 해결용)
@@ -15,7 +16,7 @@ StreamSubscription<Uri>? _linkSubscription;
 
 Future<void> _initAppLinks(String kakaoNativeKey) async {
   _appLinks = AppLinks();
-  
+
   // 초기 딥링크 확인 (앱이 딥링크로 시작된 경우)
   try {
     final initialLink = await _appLinks.getInitialLink();
@@ -25,7 +26,7 @@ Future<void> _initAppLinks(String kakaoNativeKey) async {
   } catch (e) {
     print('초기 딥링크 확인 오류: $e');
   }
-  
+
   // 딥링크 스트림 구독 (앱이 실행 중일 때 딥링크 도착)
   _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
     _handleDeepLink(uri, kakaoNativeKey);
@@ -35,7 +36,7 @@ Future<void> _initAppLinks(String kakaoNativeKey) async {
 void _handleDeepLink(Uri uri, String kakaoNativeKey) {
   final scheme = uri.scheme;
   final kakaoScheme = 'kakao$kakaoNativeKey';
-  
+
   // 카카오 딥링크인 경우 - code를 추출해서 AuthService에 전달
   if (scheme == kakaoScheme && uri.host == 'oauth') {
     final code = uri.queryParameters['code'];
@@ -55,7 +56,7 @@ void setKakaoAuthCodeCallback(void Function(String code)? callback) {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // 1. 환경 변수 로드
   try {
     await dotenv.load(fileName: "assets/dotenv");
@@ -73,7 +74,7 @@ void main() async {
       nativeAppKey: kakaoNativeKey,
       javaScriptAppKey: kakaoJsKey,
     );
-    
+
     // app_links 딥링크 핸들러 초기화 - 카카오 딥링크 감지용
     await _initAppLinks(kakaoNativeKey);
   } else {
@@ -82,6 +83,9 @@ void main() async {
 
   // 3. Supabase 초기화 - 카카오 SDK 이후에 초기화
   await SupabaseService().initialize();
+
+  // 4. Google Mobile Ads 초기화
+  await AdMobService.instance.initialize();
 
   runApp(
     MultiProvider(
@@ -153,7 +157,8 @@ class MyApp extends StatelessWidget {
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.white,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
             borderSide: const BorderSide(color: Color(0xFFD1D5DB)),

@@ -47,6 +47,9 @@ android {
         
         // 카카오 로그인을 위한 Native App Key (local.properties에서 로드)
         manifestPlaceholders["KAKAO_NATIVE_APP_KEY"] = localProperties.getProperty("KAKAO_NATIVE_APP_KEY") ?: ""
+        // AdMob 앱 ID (기본값은 Google 테스트 앱 ID, 릴리스 전 local.properties로 교체 권장)
+        manifestPlaceholders["ADMOB_APP_ID"] = localProperties.getProperty("ADMOB_APP_ID_ANDROID")
+            ?: "ca-app-pub-3940256099942544~3347511713"
     }
 
     signingConfigs {

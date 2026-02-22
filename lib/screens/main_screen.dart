@@ -4,12 +4,14 @@ import 'map_screen.dart';
 import 'region_search_screen.dart';
 import 'browser_screen.dart';
 import 'profile_screen.dart';
+import '../widgets/admob_banner.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
   // 외부에서 접근 가능한 상태 키
-  static final GlobalKey<_MainScreenState> globalKey = GlobalKey<_MainScreenState>();
+  static final GlobalKey<_MainScreenState> globalKey =
+      GlobalKey<_MainScreenState>();
 
   @override
   State<MainScreen> createState() => _MainScreenState();
@@ -19,7 +21,8 @@ class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
 
   // 브라우저 스크린의 상태에 접근하기 위한 키
-  final GlobalKey<BrowserScreenState> _browserKey = GlobalKey<BrowserScreenState>();
+  final GlobalKey<BrowserScreenState> _browserKey =
+      GlobalKey<BrowserScreenState>();
 
   // 각 탭의 Navigator 키 (네비게이션 스택 유지용)
   final List<GlobalKey<NavigatorState>> _navigatorKeys = [
@@ -46,7 +49,7 @@ class _MainScreenState extends State<MainScreen> {
     setState(() {
       _selectedIndex = index;
     });
-    
+
     if (index == 3 && browserUrl != null) {
       // 브라우저 탭으로 이동 시 URL 로드
       // 위젯이 빌드된 후 실행되도록 지연
@@ -84,7 +87,7 @@ class _MainScreenState extends State<MainScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        
+
         final navigator = _navigatorKeys[_selectedIndex].currentState;
         if (navigator != null && navigator.canPop()) {
           navigator.pop();
@@ -108,33 +111,39 @@ class _MainScreenState extends State<MainScreen> {
             _buildNavigator(4, const ProfileScreen()),
           ],
         ),
-        bottomNavigationBar: BottomNavigationBar(
-          type: BottomNavigationBarType.fixed,
-          items: const <BottomNavigationBarItem>[
-            BottomNavigationBarItem(
-              icon: Icon(Icons.home),
-              label: '홈',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.near_me),
-              label: '내 주변',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.search),
-              label: '지역 검색',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.language),
-              label: '네이버',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.person),
-              label: '내 정보',
+        bottomNavigationBar: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const AdMobBanner(),
+            BottomNavigationBar(
+              type: BottomNavigationBarType.fixed,
+              items: const <BottomNavigationBarItem>[
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.home),
+                  label: '홈',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.near_me),
+                  label: '내 주변',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.search),
+                  label: '지역 검색',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.language),
+                  label: '네이버',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.person),
+                  label: '내 정보',
+                ),
+              ],
+              currentIndex: _selectedIndex,
+              selectedItemColor: const Color(0xFF3B82F6),
+              onTap: _onItemTapped,
             ),
           ],
-          currentIndex: _selectedIndex,
-          selectedItemColor: const Color(0xFF3B82F6),
-          onTap: _onItemTapped,
         ),
       ),
     );

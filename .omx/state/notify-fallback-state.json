@@ -1,0 +1,9 @@
+{
+  "pid": 45283,
+  "started_at": "2026-02-19T02:39:53.504Z",
+  "cwd": "/Users/mac/Documents/project/kofficer-guide/kofficer-guide-mobile",
+  "notify_script": "/opt/homebrew/lib/node_modules/oh-my-codex/scripts/notify-hook.js",
+  "poll_ms": 700,
+  "tracked_files": 7,
+  "seen_turns": 1
+}

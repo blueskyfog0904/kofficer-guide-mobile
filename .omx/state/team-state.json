@@ -1,0 +1,16 @@
+{
+  "active": false,
+  "mode": "team",
+  "iteration": 0,
+  "max_iterations": 50,
+  "current_phase": "cancelled",
+  "task_description": "1:analyst,2:code-reviewer,3:product-analyst,4:planner,5:executor,6:verifier [Image #1] 현재 flutter로 만들어서 구글 안드로이드마켓과 애플 앱스토어에 출시되어 있는 kofficer-guide-mobile 앱에 구글 애드몹을 연결시키려고 해. 진행하던 중 첨부된 이미지와 같은 단계에서 중단된 상태야. 첨부된 이미지를 분석해서 현재 코드 구조를 파악한 다음 plan을 만든 후 구글 애드몹에 연결될 수 있도록 진행해줘. 연결에 필요한 코드 스니펫: google.com, pub-8304778968765929, DIRECT, f08c47fec0942fa0. 웹사이트 도메인: kofficer-guide.co.kr",
+  "started_at": "2026-02-19T02:56:31.782Z",
+  "tmux_pane_id": "%23",
+  "tmux_pane_set_at": "2026-02-19T02:56:31.782Z",
+  "linked_ralph": false,
+  "team_name": "1-analyst-2-code-reviewer-3-pr",
+  "agent_count": 3,
+  "agent_types": "executor",
+  "completed_at": "2026-02-19T04:20:59.669Z"
+}
