@@ -8,6 +8,8 @@ import '../models/restaurant.dart';
 import '../models/region.dart';
 import '../services/restaurant_service.dart';
 import '../services/map_height_service.dart';
+import '../utils/inline_ad_list_placement.dart';
+import '../widgets/inline_admob_banner.dart';
 import 'restaurant_detail_screen.dart';
 
 class RegionSearchScreen extends StatefulWidget {
@@ -279,7 +281,9 @@ class _RegionSearchScreenState extends State<RegionSearchScreen> {
       // 1단계: 대략적인 위치로 먼저 스크롤하여 카드를 화면에 가져옴
       if (_listScrollController.hasClients) {
         const cardTotalHeight = 112.0;
-        final scrollPosition = cardTotalHeight * index;
+        final renderedIndex =
+            InlineAdListPlacement.renderedIndexForContentIndex(index);
+        final scrollPosition = cardTotalHeight * renderedIndex;
         
         // jumpTo로 빠르게 대략적 위치로 이동 (카드가 빌드되도록)
         _listScrollController.jumpTo(
@@ -819,6 +823,21 @@ class _RegionSearchScreenState extends State<RegionSearchScreen> {
     );
   }
 
+  Widget _buildRestaurantListItem(int renderedIndex) {
+    if (InlineAdListPlacement.isAdIndex(renderedIndex)) {
+      return InlineAdMobBanner(
+        key: ValueKey('region-inline-ad-$renderedIndex'),
+      );
+    }
+
+    final restaurantIndex =
+        InlineAdListPlacement.contentIndexForRenderedIndex(renderedIndex);
+    final restaurant = _restaurants[restaurantIndex];
+    final isSelected = _lastClickedRestaurantId == restaurant.id;
+
+    return _buildRestaurantCard(restaurant, restaurantIndex, isSelected);
+  }
+
   Widget _buildListSizeButton(int index, String label) {
     final isSelected = _listSizeIndex == index;
     return GestureDetector(
@@ -900,12 +919,11 @@ class _RegionSearchScreenState extends State<RegionSearchScreen> {
                           controller: _listScrollController,
                           padding: const EdgeInsets.all(16),
                           physics: const ClampingScrollPhysics(),
-                          itemCount: _restaurants.length,
+                          itemCount: InlineAdListPlacement.totalItemCount(
+                            _restaurants.length,
+                          ),
                           itemBuilder: (context, index) {
-                            final restaurant = _restaurants[index];
-                            final isSelected = _lastClickedRestaurantId == restaurant.id;
-                            
-                            return _buildRestaurantCard(restaurant, index, isSelected);
+                            return _buildRestaurantListItem(index);
                           },
                         ),
                       ),

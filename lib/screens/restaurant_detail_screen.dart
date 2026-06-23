@@ -613,7 +613,7 @@ $shareUrl''';
     
     final mainState = MainScreen.globalKey.currentState;
     if (mainState != null) {
-      mainState.navigateToTab(3, browserUrl: url);
+      mainState.navigateToTab(3, browserUrl: url, preserveOrigin: true);
     }
   }
 
@@ -641,7 +641,7 @@ $shareUrl''';
     
     final mainState = MainScreen.globalKey.currentState;
     if (mainState != null) {
-      mainState.navigateToTab(3, browserUrl: url);
+      mainState.navigateToTab(3, browserUrl: url, preserveOrigin: true);
     }
   }
 

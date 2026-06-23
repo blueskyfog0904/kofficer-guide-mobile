@@ -9,6 +9,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../models/restaurant.dart';
 import '../services/restaurant_service.dart';
 import '../services/map_height_service.dart';
+import '../utils/inline_ad_list_placement.dart';
+import '../widgets/inline_admob_banner.dart';
 import 'restaurant_detail_screen.dart';
 
 class MapScreen extends StatefulWidget {
@@ -398,7 +400,9 @@ class _MapScreenState extends State<MapScreen> {
       // 1단계: 대략적인 위치로 먼저 스크롤하여 카드를 화면에 가져옴
       if (_listScrollController.hasClients) {
         const cardTotalHeight = 112.0;
-        final scrollPosition = cardTotalHeight * index;
+        final renderedIndex =
+            InlineAdListPlacement.renderedIndexForContentIndex(index);
+        final scrollPosition = cardTotalHeight * renderedIndex;
         
         // jumpTo로 빠르게 대략적 위치로 이동 (카드가 빌드되도록)
         _listScrollController.jumpTo(
@@ -960,6 +964,18 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  Widget _buildRestaurantListItem(int renderedIndex) {
+    if (InlineAdListPlacement.isAdIndex(renderedIndex)) {
+      return InlineAdMobBanner(
+        key: ValueKey('nearby-inline-ad-$renderedIndex'),
+      );
+    }
+
+    final restaurantIndex =
+        InlineAdListPlacement.contentIndexForRenderedIndex(renderedIndex);
+    return _buildRestaurantCard(_restaurants[restaurantIndex], restaurantIndex);
+  }
+
   Widget _buildRestaurantList(double height) {
     return Container(
       height: height,
@@ -1025,9 +1041,11 @@ class _MapScreenState extends State<MapScreen> {
                           controller: _listScrollController,
                           padding: const EdgeInsets.all(16),
                           physics: const ClampingScrollPhysics(),
-                          itemCount: _restaurants.length,
+                          itemCount: InlineAdListPlacement.totalItemCount(
+                            _restaurants.length,
+                          ),
                           itemBuilder: (context, index) {
-                            return _buildRestaurantCard(_restaurants[index], index);
+                            return _buildRestaurantListItem(index);
                           },
                         ),
                       ),
